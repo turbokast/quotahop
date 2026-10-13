@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""QuotaHop: on-demand subscription reports and explicitly enrolled auth renewal."""
+import sys
+import os
+from pathlib import Path
+
+venv_python = Path(__file__).absolute().parent / ".venv/bin/python"
+if venv_python.exists() and sys.prefix != str(venv_python.parent.parent):
+    os.execv(str(venv_python), [str(venv_python), "-B", str(Path(__file__).absolute()), *sys.argv[1:]])
+
+sys.dont_write_bytecode = True
+from claude_usage import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
