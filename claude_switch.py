@@ -295,7 +295,9 @@ def recommended_account(store, accounts, entries, plan=None, jobs=4):
     fail("No switchable Claude subscription has live available usage and a token valid for more than one minute. Check --verbose, or recapture expired accounts. No Claude authentication changed.")
 
 
-def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=False, automatic=False, jobs=4):
+def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=False, automatic=False, jobs=4,
+           vault_key=None, expected_current=None, expected_target=None, require_available=False,
+           authorize=None):
     check_environment()
     if automatic and plan not in (None, "max_20x", "team_premium"):
         fail("Automatic switching supports Claude subscriptions only.")
@@ -305,7 +307,8 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
         fail("Another capture/switch is active; retry when it finishes.")
     try:
         envelope = store.read("vault.json")
-        entries, key, salt = live.unlock_cached(store, envelope)
+        entries, key, salt = (live.unlock_vault(envelope, None, key=vault_key) if vault_key is not None
+                              else live.unlock_cached(store, envelope))
         if automatic:
             if not dry_run:
                 import saved_refresh
@@ -331,6 +334,16 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
             label = account_identity.extract(email=account.get("emailAddress")).get("email", "previous Claude account")
         else:
             selected, entry = select(accounts, entries, selector, plan)
+            if expected_target is not None:
+                from credential_state import fingerprint
+                if fingerprint(entry, "claude") != expected_target:
+                    fail("The target credential changed. Refresh and confirm the switch again.")
+            if require_available:
+                import datetime as dt
+                from claude_usage import UTC, report, recommendation
+                usage = report([selected], store, dt.datetime.now(UTC), entries)["accounts"][0]
+                if recommendation(usage, dt.datetime.now(UTC))[0] >= 2:
+                    fail("The confirmed subscription no longer has verified available usage. Refresh and choose again.")
             oauth, account = target_auth(selected, entry)
             label = account["emailAddress"]
         selection = {} if undo else {"account_id": selected["id"], "plan": selected["plan"],
@@ -348,6 +361,11 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
                 fail("Existing Claude authentication fields are missing; switch refused.")
             if current.get("enterpriseGateway") or config.get("primaryApiKey"):
                 fail("Gateway or Console API authentication is also configured; switching would not reliably select a Claude subscription.")
+            if expected_current is not None:
+                from credential_state import fingerprint
+                current_token = current["claudeAiOauth"].get("accessToken")
+                if not isinstance(current_token, str) or fingerprint({"access_token": current_token}, "claude") != expected_current:
+                    fail("The current Claude login changed while confirming. Refresh and choose again; no auth changed.")
             if undo and current["claudeAiOauth"].get("accessToken") != backup["installed_token"]:
                 fail("Claude authentication changed since the switch; undo refused to avoid overwriting it.")
             if not undo and current["claudeAiOauth"].get("accessToken") == oauth["accessToken"]:
@@ -358,6 +376,8 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
             if dry_run:
                 return {"message": "Dry run: would replace only claudeAiOauth and oauthAccount; no Claude files changed.",
                         "account_name": label, "changed": False, **selection}
+            if authorize is not None and not authorize():
+                fail("Panel was locked before the switch. No authentication changed.")
             if not undo:
                 backup = {"paths": [str(credentials.path), str(metadata.path)], "installed_token": oauth["accessToken"],
                           "claudeAiOauth": current["claudeAiOauth"], "oauthAccount": config["oauthAccount"]}

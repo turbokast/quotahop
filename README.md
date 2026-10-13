@@ -117,7 +117,9 @@ herdr plugin action invoke turbokast.quotahop.open
 The 32-column panel shows **remaining usage for Active and Next** subscriptions
 per provider, with separate five-hour and weekly percentages. It refreshes every
 60 seconds while open. Focus it and press `u` to unlock,
-`r` to refresh, `d` for details, `p` to pause, or `q` to close. It keeps the vault
+`r` to refresh, `d` for details, `p` to pause, or `q` to close. Use ↑/↓ to select a
+provider, Enter to preview its Next account, and Enter again to confirm a Claude
+switch (Esc cancels). Codex/Muse switching is unavailable. It keeps the vault
 key in memory until locked/closed; `quotahop --lock` locks open panels too.
 No credentials are copied into Herdr. Ordinary reports remain one-shot.
 It is a tab-local split; Herdr does not yet provide a global pinned plugin widget.
@@ -131,6 +133,7 @@ security boundaries and marketplace publication.
 ```sh
 ./quotahop --switch-next --dry-run
 ./quotahop --switch-next
+./quotahop --switch-next --provider claude
 ./quotahop --switch 'you@example.com' --plan team_premium
 ./quotahop --undo-switch
 ```

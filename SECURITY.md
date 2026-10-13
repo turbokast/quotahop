@@ -20,7 +20,8 @@ release branches at present.
   An explicitly opened `--panel` similarly retains a key until locked or closed,
   without extending the normal cache TTL. It rereads the vault for each batch.
 - Reports and captures do not modify provider authentication. Explicit Claude
-  switches modify the shared subscription login; isolated enrollment owns its
+  switches, including a confirmed panel action, modify the shared subscription
+  login; isolated enrollment owns its
   separate grants. See [USAGE.md](USAGE.md) for the precise boundaries.
 - Usage clients restrict endpoint paths and methods. No inference is performed.
   Muse CLI quota retrieval uses an explicitly selected bootstrap POST, whose

@@ -240,7 +240,7 @@ def next_account(rows, active, now):
     return min(candidates, key=lambda row: app.recommendation(row, now), default=None)
 
 
-def summary_lines(data, width, now):
+def summary_lines(data, width, now, selected_provider=None):
     result = []
     for provider, title in (("codex", "Codex"), ("claude", "Claude"), ("muse_code", "Muse")):
         rows = [r for r in data["accounts"] if r["provider"] == provider]
@@ -248,7 +248,8 @@ def summary_lines(data, width, now):
             continue
         if result:
             result.append(("", "normal"))
-        result.append((title, "group"))
+        result.append((("› " if provider == selected_provider else "  ") + title,
+                       "focus" if provider == selected_provider else "group"))
         selected = [r for r in rows if r.get("selected") is True]
         active = selected[0] if len(selected) == 1 else None
         upcoming = next_account(rows, active, now) if active else None
@@ -271,9 +272,9 @@ def summary_lines(data, width, now):
     return [(clip(text, max(0, width)), style) for text, style in result]
 
 
-def lines(data, width, now, *, details=False):
+def lines(data, width, now, *, details=False, selected_provider=None):
     if data and data.get("accounts") and not details:
-        return summary_lines(data, width, now)
+        return summary_lines(data, width, now, selected_provider)
     return detail_lines(data, width, now, details=details)
 
 
@@ -350,6 +351,7 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
         pass
     screen.timeout(200)
     styles = {"normal": 0, "muted": curses.A_DIM, "group": curses.A_BOLD,
+              "focus": curses.A_BOLD | curses.A_REVERSE,
               "selected": curses.A_BOLD, "warn": 0, "high": curses.A_BOLD}
     if color and curses.has_colors():
         curses.start_color()
@@ -364,6 +366,8 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
     data, fetch = None, None
     due, last_start, checked = 0, -100, 0
     paused, details, scroll = False, False, 0
+    selected_provider, confirmation, confirmed_after = "claude", None, 0
+    notice, notice_until = "", 0
     message = "Opening vault…"
     try:
         while True:
@@ -377,12 +381,14 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                             fetch.close()
                             fetch = None
                         data, due, message = None, float("inf"), "Locked · u unlock"
+                        confirmation = None
                 except (app.UsageError, live.LiveError, OSError, ValueError):
                     source.lock()
                     if fetch:
                         fetch.close()
                         fetch = None
                     data, due, message = None, float("inf"), "Vault unavailable · u retry"
+                    confirmation = None
             if fetch:
                 result = fetch.poll()
                 if result is not None:
@@ -392,7 +398,7 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                         message = result["error"]
                     else:
                         data, message = result, ""
-            if not paused and fetch is None and now >= due:
+            if not paused and confirmation is None and fetch is None and now >= due:
                 try:
                     accounts, entries = source.load()
                     fetch = Fetch(lambda: collect(source.path, accounts, entries, jobs, sort, reverse))
@@ -400,15 +406,26 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                     last_start, message = now, "Checking…"
                 except (app.UsageError, live.LiveError, OSError, ValueError):
                     source.lock()
-                    data, due, message = None, float("inf"), "Locked / unavailable · u unlock"
+                    data, due, message = None, float("inf"), "Locked · u unlock"
             screen.erase()
             height, width = screen.getmaxyx()
             width = max(0, width - 1)  # Never write the terminal's wrap column.
             utc = dt.datetime.now(app.UTC)
-            body = lines(data, width, utc, details=details)
+            providers = [p for p in app.PROVIDER_GROUPS if data and any(r["provider"] == p for r in data["accounts"])]
+            if providers and selected_provider not in providers:
+                selected_provider = providers[0]
+            if confirmation:
+                import panel_switch
+                body = panel_switch.confirmation_lines(confirmation, width)
+            else:
+                body = lines(data, width, utc, details=details, selected_provider=selected_provider)
             footer_count = 3 if details else 1
             visible = max(0, height - 2 - footer_count)
             scroll = min(max(0, scroll), max(0, len(body) - visible))
+            if not details and not confirmation and visible >= 3:
+                focus_line = next((i for i, (_, style) in enumerate(body) if style == "focus"), 0)
+                scroll = min(scroll, focus_line)
+                scroll = max(scroll, focus_line + 3 - visible)
             title = "QUOTAHOP · remaining" if not details else "QUOTAHOP · all accounts"
             age = (utc - app.timestamp(data["generated_at"])).total_seconds() if data else None
             status = message if message != "Checking…" or not data else ""
@@ -419,6 +436,8 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                 status += " · checked " + app.duration(age) + " ago"
             elif age is not None and age > max(120, interval * 2):
                 status = "Stale · checked " + app.duration(age) + " ago"
+            if notice and now < notice_until and not source.locked:
+                status = notice
             content = [(title, "group"), (status, "warn" if message or paused else "muted")]
             content += body[scroll:scroll + visible]
             for y, (text, style) in enumerate(content[:max(0, height - footer_count)]):
@@ -429,7 +448,9 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
             footers = ["▶ selected ○ standby ? unknown ✓ ready", "r refresh  p pause  d details  ↑↓ scroll",
                        "u unlock · l lock · q close"]
             if not details:
-                footers = ["d details · r refresh"]
+                footers = ["↑↓ provider · Enter switch" if selected_provider == "claude" else "↑↓ provider · View only"]
+            if confirmation:
+                footers = ["Enter confirm · Esc cancel"]
             if details and len(body) > visible:
                 footers[1] = f"↑↓ {scroll + 1}–{min(len(body), scroll + visible)}/{len(body)} · r refresh · d details"
             for y, text in enumerate(footers, max(0, height - footer_count)):
@@ -439,12 +460,62 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                     pass
             screen.refresh()
             key = screen.getch()
+            if confirmation:
+                if key in (27, ord('q')):
+                    confirmation, message, scroll = None, "Cancelled", 0
+                elif key in (10, 13, curses.KEY_ENTER) and now >= confirmed_after:
+                    # No killable worker for writes. Display progress, then let the
+                    # existing transactional switcher finish or roll back.
+                    try:
+                        screen.erase()
+                        screen.addstr(0, 0, clip("Switching Claude…", width), curses.A_BOLD)
+                        screen.refresh()
+                        result = panel_switch.execute(source, confirmation, utc)
+                        data, due, paused = None, 0, False
+                        message = "Switched" if result["changed"] else "Already selected"
+                        notice, notice_until = message, time.monotonic() + 8
+                    except (app.UsageError, live.LiveError, OSError, ValueError) as exc:
+                        message = str(exc) if isinstance(exc, (app.UsageError, live.LiveError)) else "Switch failed; refresh first"
+                        notice, notice_until = message, time.monotonic() + 12
+                    finally:
+                        confirmation, scroll = None, 0
+                        try:
+                            curses.flushinp()
+                        except curses.error:
+                            pass
+                elif key == ord('l'):
+                    confirmation = None
+                    source.lock()
+                    data, due, message = None, float("inf"), "Locked · u unlock"
+                continue
             if key in (ord('q'), 27):
                 return 0
             if key in (ord('j'), curses.KEY_DOWN):
-                scroll += 1
+                if not details and providers:
+                    selected_provider = providers[(providers.index(selected_provider) + 1) % len(providers)]
+                    message = ""
+                else:
+                    scroll += 1
             elif key in (ord('k'), curses.KEY_UP):
-                scroll -= 1
+                if not details and providers:
+                    selected_provider = providers[(providers.index(selected_provider) - 1) % len(providers)]
+                    message = ""
+                else:
+                    scroll -= 1
+            elif key in (10, 13, curses.KEY_ENTER) and not details:
+                import panel_switch
+                if fetch:
+                    fetch.close()
+                    fetch = None
+                try:
+                    confirmation = panel_switch.prepare(source, data, selected_provider, utc)
+                    confirmed_after, scroll, message = now + 0.5, 0, "Confirm switch"
+                    try:
+                        curses.flushinp()
+                    except curses.error:
+                        pass
+                except (app.UsageError, live.LiveError, OSError, ValueError) as exc:
+                    message = str(exc) if isinstance(exc, (app.UsageError, live.LiveError)) else "Cannot prepare switch"
             elif key == curses.KEY_NPAGE:
                 scroll += max(1, visible)
             elif key == curses.KEY_PPAGE:

@@ -17,6 +17,9 @@ For an explicitly opened, refreshing side panel, use `quotahop --panel` or the
 running in the foreground, keeps its own unlock in memory, and closes with `q`.
 `--panel-interval SECONDS` changes the interval (30–3600). Ordinary reports below
 remain one-shot. `--lock` also locks open panels for the same vault.
+In the panel, ↑/↓ selects a provider; Enter previews Next and a second Enter
+confirms a Claude switch. Esc cancels. Codex/Muse switching is unavailable.
+For the CLI, `--switch-next --provider claude` explicitly selects the provider.
 
 Checks **Claude, Codex, and Muse Code subscription quotas**, then exits.
 Claude/Codex use one GET each. Muse portal sources use one identity GET and one subscription

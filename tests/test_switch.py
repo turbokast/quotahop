@@ -347,6 +347,56 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(backup_path.stat().st_mode & 0o777, 0o600)
         self.assertNotIn(b"FAKE-", backup_path.read_bytes())
 
+    def test_panel_switch_uses_held_key_and_checks_pinned_selection_and_usage(self):
+        from credential_state import fingerprint
+        row = {"name": EMAIL, "status": "live", "live": True,
+               "usage": app.parse_usage({"five_hour": {"utilization": 20}})}
+        with patch.object(app, 'report', return_value={'accounts': [row]}) as usage, \
+             patch.object(live, 'unlock_cached', side_effect=AssertionError('prompt/cache')):
+            result = switch.switch(self.store, self.accounts, 'max-1', vault_key=KEY,
+                                   expected_current=fingerprint({'access_token': 'FAKE-OLD-ACCESS'}, 'claude'),
+                                   expected_target=fingerprint(self.entry, 'claude'), require_available=True)
+        self.assertTrue(result['changed'])
+        usage.assert_called_once()
+        self.assertEqual(usage.call_args.args[0], [self.accounts[0]])
+        self.assert_unrelated_unchanged()
+
+    def test_panel_changed_current_or_target_and_lock_refuse_before_writes(self):
+        from credential_state import fingerprint
+        kwargs = {'vault_key': KEY, 'expected_current': fingerprint({'access_token': 'FAKE-OLD-ACCESS'}, 'claude'),
+                  'expected_target': fingerprint(self.entry, 'claude')}
+        for changed in ({'expected_current': (b'wrong', None)}, {'expected_target': (b'wrong', None)},
+                        {'authorize': lambda: False}):
+            with self.assertRaises(live.LiveError):
+                switch.switch(self.store, self.accounts, 'max-1', **{**kwargs, **changed})
+            self.assert_original()
+            self.assertFalse((self.root / 'tool' / switch.BACKUP).exists())
+
+    def test_panel_refuses_exhausted_target_instead_of_reranking(self):
+        row = {"name": EMAIL, "status": "live", "live": True,
+               "usage": app.parse_usage({"five_hour": {"utilization": 100}})}
+        with patch.object(app, 'report', return_value={'accounts': [row]}), self.assertRaises(live.LiveError):
+            switch.switch(self.store, self.accounts, 'max-1', vault_key=KEY, require_available=True)
+        self.assert_original()
+        self.network.assert_not_called()
+
+    def test_unsupported_providers_fail_before_vault_or_network(self):
+        for provider in ('codex', 'muse'):
+            with patch.object(live, 'unlock_cached', side_effect=AssertionError('vault')):
+                code, result = self.cli('--switch-next', '--provider', provider)
+            self.assertEqual(code, 2)
+            self.assertIn('Claude only', result['error'])
+        self.network.assert_not_called()
+        self.assert_original()
+
+    def test_explicit_claude_provider_dispatches_existing_switcher(self):
+        with patch.object(switch, 'switch', return_value={'account_name': EMAIL, 'message': 'FAKE result'}) as called:
+            # Keep the standard redaction test helper for outputs free of fake secrets.
+            called.return_value['message'] = 'Selected account'
+            code, _ = self.cli('--switch-next', '--provider', 'claude')
+        self.assertEqual(code, 0)
+        self.assertTrue(called.call_args.kwargs['automatic'])
+
     def test_undo_restores_previous_auth_without_touching_design_or_profile_request(self):
         self.assertEqual(self.cli("--switch", "max-1")[0], 0)
         self.network.reset_mock()

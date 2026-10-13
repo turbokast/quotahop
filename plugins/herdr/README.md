@@ -67,13 +67,16 @@ source to update it. Neither operation deletes the QuotaHop vault.
 
 | Key | Action |
 |---|---|
+| `↑` / `↓`, `j` / `k` | Select a provider in the summary; scroll in details. |
+| Enter | Preview the selected provider's Next subscription; Enter again confirms. Claude only. |
+| Escape | Cancel a confirmation; otherwise close the panel. |
 | `u` | Unlock the panel using the existing vault/cache. |
 | `r` | Fetch now; requests never overlap and manual checks have a five-second cooldown. |
 | `p` | Pause/resume quota checks; cancel any active batch. |
 | `d` | Toggle the full account list, used percentages, plans, resets and errors. |
-| `↑` / `↓`, `j` / `k`, Page Up / Page Down | Scroll when accounts or details exceed the pane height. |
+| Page Up / Page Down | Scroll when accounts or details exceed the pane height. |
 | `l` | Lock this panel and clear its displayed report. |
-| `q` / Escape / Ctrl-C | Close, cancel and reap pending requests, release the panel's unlock. |
+| `q` / Ctrl-C | Close and release the panel's unlock (`q` cancels first if confirming). |
 
 **Active** means the subscription verified against the current CLI credentials.
 **Next** uses the same ranking as the CLI, excluding the active subscription,
@@ -82,6 +85,30 @@ alternatives must also be ready to switch. It never switches automatically.
 If selection cannot be verified, Active says **Unverified**; with only one saved
 account, **Saved?** shows that account's quota without claiming it is active.
 Snapshots and failed retrievals are never presented as available quota.
+
+The selected provider has a highlighted heading. **Enter** shows the exact account,
+plan and remaining quota before changing anything; **Enter again** confirms,
+**Esc** cancels. Confirmation expires after 60 seconds and quota checks pause while
+it is open. Switching rereads the vault, checks the target's live quota and profile,
+and refuses changed credentials or a changed current login. It never silently
+substitutes a different account. The panel's existing unlock is reused.
+
+Only **Claude** has a supported switching implementation. Codex and Muse show
+“View only”; Enter never modifies their authentication. A confirmed Claude
+switch changes the shared subscription login, preserving Design/MCP and other
+configuration. Existing CLI sessions may need to reload credentials. The normal
+encrypted undo record remains available through `quotahop --undo-switch`.
+
+CLI equivalent for provider-scoped best-account selection:
+
+```sh
+quotahop --switch-next --provider claude --dry-run
+quotahop --switch-next --provider claude
+```
+
+The CLI may retain the current account if it is already best. The panel instead
+confirms the particular alternative shown as Next. Neither supports Codex/Muse
+switching yet; explicit requests for those providers fail before opening the vault.
 
 In details, accounts keep the normal report's recommended order within groups.
 `▶` (cyan) means selected in current CLI files; `○` means standby and `?` means
@@ -130,7 +157,8 @@ description = "open quota panel"
 
 Only an explicitly opened panel polls usage. Ordinary `quotahop` still fetches
 once and exits. The panel starts no service, timer, detached process, native
-login, inference, token renewal or account switch. Closing it stops its own
+login, inference or token renewal. Only an explicit confirmed switch changes
+Claude authentication. Closing it stops its own
 workers; a separately enrolled renewal worker is unaffected.
 
 After unlocking, **the panel retains its derived vault key in memory until
@@ -144,7 +172,7 @@ normal cache and independent renewal worker alone.
 The panel uses the same provider clients as the report, including the **Muse
 CLI bootstrap POST** when that source is configured. Repeated checks therefore
 repeat that documented limitation; the plugin does not add any endpoints.
-It never writes provider authentication. Report data stays in memory and is
+Quota checks never write provider authentication. Report data stays in memory and is
 not cached on disk or sent to Herdr's marketplace.
 
 ## Publishing

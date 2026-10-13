@@ -957,6 +957,8 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     actions.add_argument("--muse-cli-current", action="store_true",
                          help="check the current Muse login with one bootstrap POST; no setup or vault needed")
     parser.add_argument("--plan", choices=tuple(PLANS), metavar="PLAN", help="subscription type for account actions, disambiguation or --switch-next filtering")
+    parser.add_argument("--provider", choices=("claude", "codex", "muse"),
+                        help="provider for --switch-next (default: claude; Codex/Muse switching unavailable)")
     parser.add_argument("--dry-run", action="store_true", help="preview --switch, --switch-next or --undo-switch without changing Claude auth")
     parser.add_argument("--name", metavar="NAME", help="display name for --add or --capture when identity is unavailable")
     parser.add_argument("--credential-file", type=Path, metavar="FILE",
@@ -976,6 +978,10 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     args = None
     try:
         args = parser.parse_args(argv)
+        if args.provider and not args.switch_next:
+            raise UsageError("--provider is only valid with --switch-next.")
+        if args.provider in ("codex", "muse"):
+            raise UsageError("Switching is currently supported for Claude only. Codex/Muse authentication was not changed.")
         if args.panel_interval is not None and (not args.panel or not 30 <= args.panel_interval <= 3600):
             raise UsageError("--panel-interval requires --panel and must be 30–3600 seconds.")
         if args.panel and (args.json or args.verbose):
