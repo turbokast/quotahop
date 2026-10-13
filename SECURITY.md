@@ -17,6 +17,8 @@ release branches at present.
   Storage directories use `0700`; files use `0600`.
 - The five-minute unlock cache holds a derived key in the Linux user keyring.
   An explicitly started renewal worker holds the key in memory until stopped.
+  An explicitly opened `--panel` similarly retains a key until locked or closed,
+  without extending the normal cache TTL. It rereads the vault for each batch.
 - Reports and captures do not modify provider authentication. Explicit Claude
   switches modify the shared subscription login; isolated enrollment owns its
   separate grants. See [USAGE.md](USAGE.md) for the precise boundaries.
@@ -29,6 +31,9 @@ release branches at present.
 - Undocumented provider interfaces may change, stop working, or be restricted by
   provider policies. Hash checks on native auth binaries deliberately fail closed.
 
-`quotahop --lock` stops the worker and clears this vault's cached unlock.
+`quotahop --lock` stops the worker, clears this vault's cached unlock and signals
+open quota panels to clear their displays and keys (checked about once per second).
+The optional Herdr plugin launches the installed QuotaHop command; it never copies
+credentials into its checkout or config. Panel report data stays in memory.
 Password changes re-encrypt credentials, renewal grants and undo history; they
 do not revoke provider sessions or make independently saved old backups unreadable.

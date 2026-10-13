@@ -1,0 +1,18 @@
+id = "turbokast.quotahop"
+name = "QuotaHop"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Compact Claude, Codex and Muse subscription quotas, resets and selected accounts. Uses your installed QuotaHop vault."
+platforms = ["linux"]
+
+[[actions]]
+id = "open"
+title = "Open QuotaHop side panel"
+contexts = ["workspace"]
+command = ["python3", "plugin.py", "open"]
+
+[[panes]]
+id = "usage"
+title = "QuotaHop"
+placement = "split"
+command = ["python3", "plugin.py", "panel"]

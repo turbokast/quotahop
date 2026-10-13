@@ -334,7 +334,7 @@ def validate_accounts(value):
         ident = account["id"]
         if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", ident):
             raise UsageError("Account IDs must use lowercase letters, digits, and hyphens.")
-        if ident in {"accounts", "vault", "vault-rekey", "switch-backup", "renewal", "renewal-status", "renewal-stop", "renewal-lock"} or ident in seen:
+        if ident in {"accounts", "vault", "vault-rekey", "switch-backup", "renewal", "renewal-status", "renewal-stop", "renewal-lock", "panel-lock"} or ident in seen:
             raise UsageError("Account IDs must be unique and cannot use reserved storage names.")
         seen.add(ident)
         account["name"] = clean_text(account["name"])
@@ -911,6 +911,7 @@ Examples:
   %(prog)s --sort 7d --reverse
   %(prog)s --switch-next --dry-run
   %(prog)s --change-password
+  %(prog)s --panel
   %(prog)s --json
 
 Authentication:
@@ -935,7 +936,8 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                         help="private storage directory (default: .usage-data beside the checkout)")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--setup", action="store_true", help="create the optional seven-Claude-account template; keep existing settings")
-    actions.add_argument("--lock", action="store_true", help="stop this vault's worker and forget its five-minute cached unlock")
+    actions.add_argument("--panel", action="store_true", help="open a compact foreground panel; refresh while open; q closes, l locks")
+    actions.add_argument("--lock", action="store_true", help="lock open panels, stop this vault's worker and clear its five-minute unlock cache")
     actions.add_argument("--change-password", "--reset-password", action="store_true",
                          help="set a new vault password; preserve credentials (current password or cached unlock required)")
     actions.add_argument("--background", choices=("start", "status", "stop"), help="start, inspect or stop independent auth maintenance; no quota polling")
@@ -961,6 +963,7 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                         help="read-only Claude/Codex source for --capture (default: provider CLI credentials)")
     parser.add_argument("--muse-team", metavar="ID", help="Meta portal team ID for --capture; otherwise select interactively")
     parser.add_argument("--json", action="store_true", help="emit structured JSON with full details and no credentials")
+    parser.add_argument("--panel-interval", type=int, metavar="SECONDS", help="--panel refresh interval, 30–3600 seconds (default: 60)")
     parser.add_argument("--jobs", type=int, choices=range(1, 9), default=4, metavar="1-8",
                         help="concurrent foreground account checks (default: 4; use 1 for sequential checks)")
     parser.add_argument("--sort", choices=SORT_COLUMNS, default="recommended", metavar="COLUMN",
@@ -973,6 +976,10 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     args = None
     try:
         args = parser.parse_args(argv)
+        if args.panel_interval is not None and (not args.panel or not 30 <= args.panel_interval <= 3600):
+            raise UsageError("--panel-interval requires --panel and must be 30–3600 seconds.")
+        if args.panel and (args.json or args.verbose):
+            raise UsageError("--panel is interactive; omit --json and --verbose. Press d for details.")
         if args.credential_file and not args.capture:
             raise UsageError("--credential-file is only valid with --capture.")
         if args.muse_team and not args.capture:
@@ -985,6 +992,11 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
             raise UsageError("--switch-next always uses the recommended ranking; omit --sort and --reverse.")
         if args.name and not (args.add or args.capture):
             raise UsageError("--name is only valid with --add or --capture.")
+        if args.panel:
+            import usage_panel
+            return usage_panel.run(args.data_dir, interval=args.panel_interval or 60,
+                                   jobs=args.jobs, sort=args.sort, reverse=args.reverse,
+                                   color=color_enabled(args.color))
         if args.muse_cli_current:
             import muse_cli_usage
             data = muse_cli_usage.report(dt.datetime.now(UTC))
@@ -999,6 +1011,8 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 return 1 if result.get("background_error") else 0
             if args.lock:
                 import auth_renewal
+                import usage_panel
+                usage_panel.lock_panels(store)
                 auth_renewal.stop(store)
                 live_usage.lock_vault(store)
                 message = "Vault locked. The next command needing saved credentials will ask for your passphrase."

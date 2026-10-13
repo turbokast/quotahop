@@ -12,6 +12,12 @@ In the compact report, `● LIVE` means usage was fetched successfully;
 `● LIVE ✓` additionally marks a Claude switching candidate. The checkmark is
 not a background-renewal indicator; use `--background status` for that.
 
+For an explicitly opened, refreshing side panel, use `quotahop --panel` or the
+[Herdr plugin](plugins/herdr/README.md). It refreshes every 60 seconds only while
+running in the foreground, keeps its own unlock in memory, and closes with `q`.
+`--panel-interval SECONDS` changes the interval (30–3600). Ordinary reports below
+remain one-shot. `--lock` also locks open panels for the same vault.
+
 Checks **Claude, Codex, and Muse Code subscription quotas**, then exits.
 Claude/Codex use one GET each. Muse portal sources use one identity GET and one subscription
 quota GET for the portal team you select. Ordinary reports perform no inference, login,

@@ -14,10 +14,11 @@ Runs locally on Ubuntu. No inference requests, hosted service, or telemetry.
 - **One command, one report.** Five-hour and weekly usage, local reset times, and model allowances.
 - **Useful defaults.** Accounts grouped by provider and ranked by spare capacity and reset urgency.
 - **Readable anywhere.** Compact tables, colours, selected-login markers, and JSON for scripts.
+- **Herdr panel.** Keep quotas beside your work in an optional compact, live terminal split.
 - **Private accounts.** An encrypted vault, five-minute unlock cache, and separate entries for personal and Team subscriptions sharing an email.
 - **Explicit switching.** Preview, switch, and undo Claude subscription changes while preserving unrelated configuration.
 
-[Quick start](#quick-start) · [Everyday commands](#everyday-commands) · [Renewal](#independent-sign-in-and-renewal) · [Full guide](USAGE.md) · [Security](SECURITY.md)
+[Quick start](#quick-start) · [Everyday commands](#everyday-commands) · [Herdr plugin](#herdr-plugin) · [Renewal](#independent-sign-in-and-renewal) · [Full guide](USAGE.md) · [Security](SECURITY.md)
 
 ## What’s supported
 
@@ -102,6 +103,26 @@ The default ranking uses `remaining percentage / (1 + hours until earliest reset
 Remaining percentage is the smaller known five-hour/weekly headroom. Exhausted
 and unavailable accounts rank below usable ones. This is a practical heuristic;
 percentages across different plans do not represent equal token allowances.
+
+## Herdr plugin
+
+Keep the combined report in a small terminal panel. Requires Herdr 0.9.1+ and
+your configured QuotaHop command on PATH:
+
+```sh
+herdr plugin install turbokast/quotahop/plugins/herdr
+herdr plugin action invoke turbokast.quotahop.open
+```
+
+The panel refreshes every 60 seconds while open. Focus it and press `u` to unlock,
+`r` to refresh, `d` for details, `p` to pause, or `q` to close. It keeps the vault
+key in memory until locked/closed; `quotahop --lock` locks open panels too.
+No credentials are copied into Herdr. Ordinary reports remain one-shot.
+It is a tab-local split; Herdr does not yet provide a global pinned plugin widget.
+
+You can also run `./quotahop --panel` in any interactive terminal.
+See the [plugin guide](plugins/herdr/README.md) for configuration, controls,
+security boundaries and marketplace publication.
 
 ## Switch Claude subscriptions
 
