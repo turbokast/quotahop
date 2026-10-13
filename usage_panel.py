@@ -215,7 +215,69 @@ def cell(row, key, now):
     return f"{used:>4} {countdown(item.get('resets_at'), now):>5}"
 
 
+def remaining(row, key):
+    value = ((row.get("usage") or {}).get(key) or {}).get("utilization")
+    if value is None:
+        return "—"
+    left = max(0, 100 - value)
+    return "<1%" if 0 < left < 1 else f"{left:.0f}%"
+
+
+def next_account(rows, active, now):
+    """Same ranking as the CLI, restricted to verified usable alternatives."""
+    candidates = []
+    for row in rows:
+        if row["id"] == active["id"] or row.get("selected") is not False:
+            continue
+        if app.recommendation(row, now)[0] not in (0, 1):
+            continue
+        expiry = row.get("credential_expires_at")
+        if expiry is not None and expiry <= now.timestamp() + 60:
+            continue
+        if row["provider"] == "claude" and row.get("switch_readiness") != "ready":
+            continue
+        candidates.append(row)
+    return min(candidates, key=lambda row: app.recommendation(row, now), default=None)
+
+
+def summary_lines(data, width, now):
+    result = []
+    for provider, title in (("codex", "Codex"), ("claude", "Claude"), ("muse_code", "Muse")):
+        rows = [r for r in data["accounts"] if r["provider"] == provider]
+        if not rows:
+            continue
+        if result:
+            result.append(("", "normal"))
+        result.append((title, "group"))
+        selected = [r for r in rows if r.get("selected") is True]
+        active = selected[0] if len(selected) == 1 else None
+        upcoming = next_account(rows, active, now) if active else None
+        # One saved subscription can still show useful quota without falsely
+        # claiming that its credentials match the current CLI login.
+        saved = rows[0] if active is None and len(rows) == 1 else None
+        slots = [("Active", active), ("Saved?" if saved else "Next", saved or upcoming)]
+        for label, row in slots:
+            if row is not None and row.get("live") and row.get("status") == "live":
+                values = [remaining(row, key) for key in ("five_hour", "seven_day")]
+                usage = row.get("usage") or {}
+                known = [w["utilization"] for w in (usage.get("five_hour"), usage.get("seven_day"))
+                         if isinstance(w, dict) and w.get("utilization") is not None]
+                style = "high" if known and max(known) >= 90 else "warn" if known and max(known) >= 70 else "selected" if label == "Active" else "normal"
+                result.append((f"  {label:<8}{values[0]:>6}{values[1]:>8}", style))
+            else:
+                text = ("Unavailable" if row else "Unverified" if active is None else
+                        "No other sub" if len(rows) == 1 else "None available")
+                result.append((f"  {label:<8}{text}", "muted"))
+    return [(clip(text, max(0, width)), style) for text, style in result]
+
+
 def lines(data, width, now, *, details=False):
+    if data and data.get("accounts") and not details:
+        return summary_lines(data, width, now)
+    return detail_lines(data, width, now, details=details)
+
+
+def detail_lines(data, width, now, *, details=False):
     """Pure, width-bounded rendering. Rows retain the backend's recommendation order."""
     result = []
     if not data or not data.get("accounts"):
@@ -344,28 +406,33 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
             width = max(0, width - 1)  # Never write the terminal's wrap column.
             utc = dt.datetime.now(app.UTC)
             body = lines(data, width, utc, details=details)
-            visible = max(0, height - 5)
+            footer_count = 3 if details else 1
+            visible = max(0, height - 2 - footer_count)
             scroll = min(max(0, scroll), max(0, len(body) - visible))
-            live_count = data.get("live_accounts", 0) if data else 0
-            count = len(data["accounts"]) if data else 0
-            title = f"QUOTAHOP  {live_count}/{count} checked OK"
+            title = "QUOTAHOP · remaining" if not details else "QUOTAHOP · all accounts"
             age = (utc - app.timestamp(data["generated_at"])).total_seconds() if data else None
-            status = message or ("Paused" if paused else "Locked · u unlock" if due == float("inf")
-                                 else f"Next check {max(0, int(due - now))}s")
-            if age is not None:
+            status = message if message != "Checking…" or not data else ""
+            status = status or ("Paused" if paused else "Locked · u unlock" if due == float("inf")
+                               else "              5h      7d" if not details
+                               else f"Next check {max(0, int(due - now))}s")
+            if age is not None and (details or paused or message not in ("", "Checking…")):
                 status += " · checked " + app.duration(age) + " ago"
+            elif age is not None and age > max(120, interval * 2):
+                status = "Stale · checked " + app.duration(age) + " ago"
             content = [(title, "group"), (status, "warn" if message or paused else "muted")]
             content += body[scroll:scroll + visible]
-            for y, (text, style) in enumerate(content[:max(0, height - 3)]):
+            for y, (text, style) in enumerate(content[:max(0, height - footer_count)]):
                 try:
                     screen.addstr(y, 0, clip(text, width), styles[style])
                 except curses.error:
                     pass
             footers = ["▶ selected ○ standby ? unknown ✓ ready", "r refresh  p pause  d details  ↑↓ scroll",
                        "u unlock · l lock · q close"]
-            if len(body) > visible:
+            if not details:
+                footers = ["d details · r refresh"]
+            if details and len(body) > visible:
                 footers[1] = f"↑↓ {scroll + 1}–{min(len(body), scroll + visible)}/{len(body)} · r refresh · d details"
-            for y, text in enumerate(footers, max(0, height - 3)):
+            for y, text in enumerate(footers, max(0, height - footer_count)):
                 try:
                     screen.addstr(y, 0, clip(text, width), curses.A_DIM)
                 except curses.error:

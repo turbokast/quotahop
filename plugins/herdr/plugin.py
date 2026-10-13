@@ -63,8 +63,8 @@ def main(argv=None):
                        "--direction", "right", "--no-focus")
         pane = result["plugin_pane"]["pane"]["pane_id"]
         # Resize only this newly created split. Small terminals retain equal halves.
-        if rectangle["width"] > 110:
-            amount = max(0, 0.5 - 44 / rectangle["width"])
+        if rectangle["width"] > 90:
+            amount = max(0, 0.5 - 32 / rectangle["width"])
             try:
                 herdr("pane", "resize", "--pane", pane, "--direction", "right",
                       "--amount", f"{amount:.4f}")

@@ -41,9 +41,8 @@ def fixture():
 class RenderTests(unittest.TestCase):
     def test_all_nine_accounts_groups_plans_and_selection_fit_small_panel(self):
         data = fixture()
-        rows = panel.lines(data, 43, NOW)
+        rows = panel.lines(data, 43, NOW, details=True)
         text = '\n'.join(s for s, _ in rows)
-        self.assertLessEqual(len(rows), 24)
         for a in data['accounts']:
             self.assertIn(a['name'], text)
         self.assertIn('▶ Max 1 · Max ✓', text)
@@ -61,7 +60,7 @@ class RenderTests(unittest.TestCase):
         data['accounts'][2].update(status='snapshot', live=False)
         data['accounts'][-1]['usage']['five_hour']['utilization'] = 101
         data['accounts'][-2]['usage']['five_hour'] = {'utilization': None, 'resets_at': None}
-        text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW))
+        text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW, details=True))
         for term in ('SIGN IN', 'SETUP', '◷', '101%', '—'):
             self.assertIn(term, text)
         self.assertNotIn('0%', text)
@@ -80,6 +79,62 @@ class RenderTests(unittest.TestCase):
         for seconds, expected in ((-1, 'due'), (30, '<1m'), (600, '10m'), (3900, '1h05'), (90000, '1d01')):
             self.assertEqual(panel.countdown((NOW + dt.timedelta(seconds=seconds)).isoformat(), NOW), expected)
         self.assertEqual(panel.countdown(None, NOW), '—')
+
+    def test_summary_only_shows_active_and_next_remaining(self):
+        data = fixture()
+        data['accounts'][-2]['selected'] = True
+        data['accounts'][-1]['selected'] = True
+        text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW))
+        self.assertEqual(text.count('Active'), 3)
+        self.assertEqual(text.count('Next'), 3)
+        self.assertIn('58%', text)
+        self.assertIn('36%', text)
+        self.assertNotIn('42%', text)
+        self.assertNotIn('Max 1', text)
+        self.assertNotIn('@', text)
+        self.assertNotIn('reset', text)
+        self.assertLessEqual(len(text.splitlines()), 12)
+
+    def test_next_uses_recommendation_and_excludes_unusable_accounts(self):
+        rows = fixture()['accounts'][:7]
+        active = rows[0]
+        rows[1]['usage']['five_hour']['utilization'] = 0
+        rows[1]['switch_readiness'] = 'expired'
+        rows[2]['usage']['five_hour']['utilization'] = 100
+        rows[3].update(status='snapshot', live=False)
+        rows[4]['selected'] = None
+        rows[5]['usage']['five_hour']['utilization'] = 10
+        rows[5]['usage']['seven_day']['utilization'] = 10
+        self.assertEqual(panel.next_account(list(reversed(rows)), active, NOW)['id'], rows[5]['id'])
+        rows[5]['credential_expires_at'] = NOW.timestamp() - 1
+        self.assertEqual(panel.next_account(rows, active, NOW)['id'], rows[6]['id'])
+
+    def test_unknown_selection_does_not_invent_active_or_alternative(self):
+        data = fixture()
+        for row in data['accounts']:
+            row['selected'] = None
+        text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW))
+        self.assertEqual(text.count('Active  '), 3)
+        self.assertIn('Unverified', text)
+        self.assertEqual(text.count('Saved?'), 2)  # Single saved Codex/Muse, explicitly unverified.
+        self.assertIsNone(panel.next_account([data['accounts'][0]], data['accounts'][0], NOW))
+
+    def test_summary_missing_overage_small_remaining_and_error(self):
+        data = fixture()
+        row = data['accounts'][0]
+        row['usage']['five_hour']['utilization'] = 101
+        row['usage']['seven_day']['utilization'] = None
+        text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW))
+        self.assertIn('Active      0%       —', text)
+        row['usage']['five_hour']['utilization'] = 99.9
+        self.assertEqual(panel.remaining(row, 'five_hour'), '<1%')
+        row.update(live=False, status='error')
+        text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW))
+        self.assertIn('Active  Unavailable', text)
+
+    def test_summary_stays_within_narrow_width(self):
+        for width in (0, 1, 12, 26, 43):
+            self.assertTrue(all(app.display_width(s) <= width for s, _ in panel.lines(fixture(), width, NOW)))
 
 
 class SourceTests(unittest.TestCase):

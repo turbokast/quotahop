@@ -1,8 +1,8 @@
 id = "turbokast.quotahop"
 name = "QuotaHop"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.1"
-description = "Compact Claude, Codex and Muse subscription quotas, resets and selected accounts. Uses your installed QuotaHop vault."
+description = "Usage remaining on your active and next Claude, Codex and Muse subscriptions. Uses your installed QuotaHop vault."
 platforms = ["linux"]
 
 [[actions]]

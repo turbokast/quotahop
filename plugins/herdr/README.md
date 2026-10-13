@@ -5,24 +5,25 @@ Uses your existing QuotaHop installation and vault. Linux, Python 3.12+, Herdr
 0.9.1+. No extra Python packages, separate account store, or hosted service.
 
 ```text
-QUOTAHOP  9/9 checked OK
-Next check 48s · checked <1m ago
-OPENAI · used % / reset
-▶ alex@example.com · Codex
-  5h    —     —  7d  26% 5d09
-ANTHROPIC · used % / reset
-○ alex@example.com · Max ✓
-  5h  42%  1h23  7d  64% 3d02
-▶ alex@example.com · Team ✓
-  5h  12%  2h10  7d  35% 4d03
-META · used % / reset
-▶ alex@example.net · Muse
-  5h  29%  3h08  7d  23% 5d12
+QUOTAHOP · remaining
+              5h      7d
+Codex
+  Active       —     74%
+  Next    No other sub
+
+Claude
+  Active     88%     65%
+  Next      100%     60%
+
+Muse
+  Active     71%     77%
+  Next    No other sub
 ```
 
-Illustrative values. Percentages are **used**, followed by time until reset.
-No quota is inferred when the provider omits it. Each subscription has its own
-row; a shared email does not combine personal and Team allowances.
+Illustrative values. The default view shows only **usage remaining** on the
+active subscription and the best available alternative for each provider.
+Five-hour and weekly allowances stay separate; missing data stays unknown.
+Account names, reset times and the full account list are behind **d**.
 
 ## Install and open
 
@@ -36,7 +37,7 @@ herdr plugin install turbokast/quotahop/plugins/herdr
 herdr plugin action invoke turbokast.quotahop.open
 ```
 
-The action opens a right split and aims for 44 columns on a wide terminal.
+The action opens a right split and aims for 32 columns on a wide terminal.
 It keeps focus in your current pane. Focus QuotaHop with Herdr's usual pane
 navigation; press **u** to unlock if the five-minute cache has expired.
 Each invocation opens a new panel; close unused ones with **q**.
@@ -69,20 +70,29 @@ source to update it. Neither operation deletes the QuotaHop vault.
 | `u` | Unlock the panel using the existing vault/cache. |
 | `r` | Fetch now; requests never overlap and manual checks have a five-second cooldown. |
 | `p` | Pause/resume quota checks; cancel any active batch. |
-| `d` | Show full account names, plan, exact local reset timestamps and errors. |
+| `d` | Toggle the full account list, used percentages, plans, resets and errors. |
 | `↑` / `↓`, `j` / `k`, Page Up / Page Down | Scroll when accounts or details exceed the pane height. |
 | `l` | Lock this panel and clear its displayed report. |
 | `q` / Escape / Ctrl-C | Close, cancel and reap pending requests, release the panel's unlock. |
 
-Accounts keep the normal report's recommended order within provider groups.
+**Active** means the subscription verified against the current CLI credentials.
+**Next** uses the same ranking as the CLI, excluding the active subscription,
+expired credentials, exhausted quotas and unverified alternatives. Claude
+alternatives must also be ready to switch. It never switches automatically.
+If selection cannot be verified, Active says **Unverified**; with only one saved
+account, **Saved?** shows that account's quota without claiming it is active.
+Snapshots and failed retrievals are never presented as available quota.
+
+In details, accounts keep the normal report's recommended order within groups.
 `▶` (cyan) means selected in current CLI files; `○` means standby and `?` means
 selection could not be verified. Already-running CLI sessions can retain another
 login. `✓` means a Claude switching candidate, **not** automatic renewal.
-Yellow/red indicate high usage; `◷` marks imported snapshots.
+Yellow/red indicate low remaining usage; `◷` marks imported snapshots in details.
 
-The header shows when the last batch was checked. Paused or failed checks retain
-that timestamp; past reset times display `due` without inventing a fresh quota.
-Exact reset timestamps in details use your local timezone. `NO_COLOR` is respected.
+The default view hides routine refresh notices. Paused, failed or stale checks
+show a warning and the report age. Details show refresh timing and exact local
+reset timestamps; past resets display `due` without inventing a fresh quota.
+`NO_COLOR` is respected.
 
 ## Optional configuration
 

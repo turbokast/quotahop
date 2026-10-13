@@ -114,7 +114,9 @@ herdr plugin install turbokast/quotahop/plugins/herdr
 herdr plugin action invoke turbokast.quotahop.open
 ```
 
-The panel refreshes every 60 seconds while open. Focus it and press `u` to unlock,
+The 32-column panel shows **remaining usage for Active and Next** subscriptions
+per provider, with separate five-hour and weekly percentages. It refreshes every
+60 seconds while open. Focus it and press `u` to unlock,
 `r` to refresh, `d` for details, `p` to pause, or `q` to close. It keeps the vault
 key in memory until locked/closed; `quotahop --lock` locks open panels too.
 No credentials are copied into Herdr. Ordinary reports remain one-shot.
