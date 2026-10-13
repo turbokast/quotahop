@@ -334,7 +334,7 @@ def validate_accounts(value):
         ident = account["id"]
         if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", ident):
             raise UsageError("Account IDs must use lowercase letters, digits, and hyphens.")
-        if ident in {"accounts", "vault", "switch-backup", "renewal", "renewal-status", "renewal-stop", "renewal-lock"} or ident in seen:
+        if ident in {"accounts", "vault", "vault-rekey", "switch-backup", "renewal", "renewal-status", "renewal-stop", "renewal-lock"} or ident in seen:
             raise UsageError("Account IDs must be unique and cannot use reserved storage names.")
         seen.add(ident)
         account["name"] = clean_text(account["name"])
@@ -352,7 +352,8 @@ def validate_accounts(value):
 class Store:
     """Owned private directory, descriptor-relative access, no symlink following."""
 
-    def __init__(self, path, create=False):
+    def __init__(self, path, create=False, *, maintenance=False):
+        self.maintenance = maintenance
         path = Path(os.path.abspath(path))
         if any(p in {".claude", "claude", ".aws", ".codex", "codex", "muse", ".muse", ".git"} for p in path.parts):
             raise UsageError("Data directory cannot be inside a protected application directory.")
@@ -389,6 +390,7 @@ class Store:
             raise UsageError("Invalid storage filename.")
 
     def read(self, name):
+        self.check_rekey()
         self.check_name(name)
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd)
         with os.fdopen(fd, "rb") as stream:
@@ -399,6 +401,7 @@ class Store:
             return decode(stream.read(LIMIT + 1))
 
     def write(self, name, value, replace=False):
+        self.check_rekey()
         self.check_name(name)
         temp = ".tmp-" + uuid.uuid4().hex
         payload = (json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
@@ -423,6 +426,7 @@ class Store:
                 pass
 
     def delete(self, name):
+        self.check_rekey()
         self.check_name(name)
         try:
             # Unlink only our directory entry; never follow a symlink to its target.
@@ -430,6 +434,15 @@ class Store:
             os.fsync(self.fd)
         except FileNotFoundError:
             pass
+
+    def check_rekey(self):
+        if self.maintenance:
+            return
+        try:
+            os.stat("vault-rekey.json", dir_fd=self.fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise UsageError("A password change is unfinished. Run --change-password and enter the NEW password to finish it; other vault operations are blocked.")
 
 
 def duration(seconds):
@@ -731,7 +744,7 @@ def render(data, now, *, verbose=False, color=False, width=None):
             state = cells[6]
             readiness = account.get('switch_readiness')
             if show_selection and account['status'] == 'live' and readiness == 'ready':
-                state = '✓ Ready'
+                state = '● LIVE ✓'
             elif show_selection and account['status'] == 'error' and readiness in ('expired', 'expiring'):
                 state = '✕ ' + readiness.capitalize()
             if account['status'] == 'not_configured':
@@ -802,8 +815,7 @@ def render(data, now, *, verbose=False, color=False, width=None):
     if show_selection:
         lines += [''] + [paint(part, '1;36') for part in wrap_cells(
             '▶ Selected CLI login  ·  ○ Standby  ·  ? Unverified' + ('  ·  ↻ Until reset' if compact else ''), width)]
-        if not compact:
-            lines.extend(wrap_cells('✓ Ready: Claude token time left', width))
+        lines.extend(wrap_cells('● LIVE: usage fetched · ✓ Ready: Claude switching candidate, not renewal status', width))
         lines.extend(paint(part, '90') for part in wrap_cells(
             'Selection follows CLI files; already-running sessions may use another login.', width))
     if not verbose:
@@ -862,6 +874,18 @@ def render(data, now, *, verbose=False, color=False, width=None):
     return "\n".join(lines)
 
 
+class AlphabeticalHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Sort by the primary long option, keeping aliases beside that option."""
+
+    def __init__(self, prog):
+        width = min(100, max(60, shutil.get_terminal_size((100, 24)).columns))
+        super().__init__(prog, width=width, max_help_position=31)
+
+    def add_arguments(self, actions):
+        super().add_arguments(sorted(actions, key=lambda action: next(
+            (option for option in action.option_strings if option.startswith("--")), action.dest)))
+
+
 class SafeParser(argparse.ArgumentParser):
     def error(self, message):
         # argparse's default echoes unrecognized arguments, which could be secrets.
@@ -869,43 +893,83 @@ class SafeParser(argparse.ArgumentParser):
 
 
 def main(argv=None):
-    parser = SafeParser(description="One-shot usage checker. Configured Muse CLI sources use one bootstrap POST; other sources use GETs. Reports never log in or refresh tokens. Explicit --auth-enroll/--background manage independent Claude/Codex grants and Muse expiry tracking.")
-    parser.add_argument("--data-dir", type=Path, default=Path(__file__).absolute().parent / ".usage-data")
+    parser = SafeParser(
+        usage="%(prog)s [ACTION] [OPTIONS]",
+        formatter_class=AlphabeticalHelpFormatter,
+        description=("QuotaHop — Claude, Codex and Muse Code subscription usage.\n"
+                     "No action: fetch each configured account once, show the table, and exit.\n"
+                     "Choose at most one action. Reports never run inference, login or renewal."),
+        epilog="""Account selectors:
+  ACCOUNT is a saved ID, email or name. Use --plan for ambiguous names.
+  --capture also accepts claude, codex or muse to detect the current account.
+  Plans: codex, max_20x, muse_code, team_premium.
+
+Examples:
+  %(prog)s --setup
+  %(prog)s --capture claude --plan team_premium
+  %(prog)s --capture codex
+  %(prog)s --sort 7d --reverse
+  %(prog)s --switch-next --dry-run
+  %(prog)s --change-password
+  %(prog)s --json
+
+Authentication:
+  --auth-enroll starts background maintenance after a separate sign-in.
+  Claude/Codex: automatic renewal. Muse: expiry tracking, no device-token renewal.
+  Renewal updates this vault; --switch installs a Claude access token globally.
+  --muse-cli-current uses a bootstrap POST, not a read-only API contract.
+  Enter passwords only at hidden prompts, never in arguments or configuration.
+
+Report states:
+  LIVE = usage fetched. LIVE + checkmark = Claude switching candidate.
+  Readiness is not renewal status; inspect --background status separately.
+
+Exit codes:
+  0 success; 1 retrieval/restart error; 2 input/vault error;
+  3 unconfigured/unsupported accounts; 130 interrupted.
+  Historical snapshots can exit 0: scripts should also check JSON's live field.
+
+Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
+""")
+    parser.add_argument("--data-dir", type=Path, metavar="DIR", default=Path(__file__).absolute().parent / ".usage-data",
+                        help="private storage directory (default: .usage-data beside the checkout)")
     actions = parser.add_mutually_exclusive_group()
-    actions.add_argument("--setup", action="store_true", help="create seven account definitions; never log in")
-    actions.add_argument("--lock", action="store_true", help="stop this vault's renewal worker and forget its five-minute cached unlock")
-    actions.add_argument("--background", choices=("start", "status", "stop"), help="manage independent Claude/Codex renewal and Muse expiry tracking")
-    actions.add_argument("--auth-enroll", metavar="ACCOUNT", help="isolated sign-in and automatic background startup: Claude/Codex renewal, Muse expiry tracking; plan optional for a unique saved account")
-    actions.add_argument("--auth-forget", metavar="ACCOUNT", help="remove the independent renewal grant locally, without provider logout")
-    actions.add_argument("--refresh", action="store_true", help="one-shot readiness check: verify saved Claude identities, sync an already-renewed current CLI token, and report usage; never renews OAuth grants")
+    actions.add_argument("--setup", action="store_true", help="create the optional seven-Claude-account template; keep existing settings")
+    actions.add_argument("--lock", action="store_true", help="stop this vault's worker and forget its five-minute cached unlock")
+    actions.add_argument("--change-password", "--reset-password", action="store_true",
+                         help="set a new vault password; preserve credentials (current password or cached unlock required)")
+    actions.add_argument("--background", choices=("start", "status", "stop"), help="start, inspect or stop independent auth maintenance; no quota polling")
+    actions.add_argument("--auth-enroll", metavar="ACCOUNT", help="sign in separately for a saved account and start background maintenance")
+    actions.add_argument("--auth-forget", metavar="ACCOUNT", help="forget an independent renewal grant; retain the last access token; no logout")
+    actions.add_argument("--refresh", action="store_true", help="sync an already-renewed current CLI token and report usage; no OAuth renewal")
     actions.add_argument("--import", dest="import_id", metavar="ACCOUNT_ID",
-                         help="save a manual usage snapshot from stdin (no credentials)")
+                         help="import a historical usage snapshot from stdin; never treated as live")
     actions.add_argument("--capture", metavar="ACCOUNT",
-                         help="capture by email/name, or use claude/codex/muse to detect identity; legacy IDs still work")
-    actions.add_argument("--add", metavar="ACCOUNT_ID", help="add an account label; requires --plan")
-    actions.add_argument("--remove", metavar="ACCOUNT", help="remove a saved entry by name, email, or ID, including its captured token and snapshot")
-    actions.add_argument("--switch", metavar="ACCOUNT", help="explicitly switch shared Claude Code subscription auth only; preserves Design/MCP auth and other configuration")
-    actions.add_argument("--switch-next", action="store_true", help="check Claude usage, choose the best usable subscription with the table's ranking, and switch to it")
-    actions.add_argument("--undo-switch", action="store_true", help="restore the previous Claude Code auth from the encrypted undo record")
-    actions.add_argument("--import-muse", metavar="ACCOUNT_ID", help="save an exported Muse usage/read result from stdin; historical, not live")
+                         help="save current Claude/Codex access-only credentials, or enter a Muse portal cookie privately")
+    actions.add_argument("--add", metavar="ACCOUNT_ID", help="add a subscription row; requires --plan; optional --name")
+    actions.add_argument("--remove", metavar="ACCOUNT", help="remove a row, its captured token, renewal grant and snapshot")
+    actions.add_argument("--switch", metavar="ACCOUNT", help="switch shared Claude Code subscription auth; preserve Design/MCP and other settings")
+    actions.add_argument("--switch-next", action="store_true", help="switch Claude to the best available subscription using the report ranking")
+    actions.add_argument("--undo-switch", action="store_true", help="restore previous shared Claude Code auth from the encrypted undo record")
+    actions.add_argument("--import-muse", metavar="ACCOUNT_ID", help="import a historical Muse usage/read export from stdin")
     actions.add_argument("--muse-cli-current", action="store_true",
-                         help="explicitly check current Muse CLI login via one bootstrap POST (onboarding disabled); no vault/setup needed")
-    parser.add_argument("--plan", choices=tuple(PLANS), help="plan for --add/--capture, to disambiguate --auth-enroll/--auth-forget/--remove/--switch, or filter --switch-next")
-    parser.add_argument("--dry-run", action="store_true", help="preview --switch/--switch-next/--undo-switch without changing Claude files")
-    parser.add_argument("--name", help="display name for --add or --capture when identity is unavailable")
-    parser.add_argument("--credential-file", type=Path,
-                        help="read-only source for --capture; defaults to the provider's existing config directory")
-    parser.add_argument("--muse-team", help="Meta portal team ID for --capture; otherwise choose interactively")
-    parser.add_argument("--json", action="store_true", help="emit structured output")
-    parser.add_argument("--jobs", type=int, choices=range(1, 9), default=4,
+                         help="check the current Muse login with one bootstrap POST; no setup or vault needed")
+    parser.add_argument("--plan", choices=tuple(PLANS), metavar="PLAN", help="subscription type for account actions, disambiguation or --switch-next filtering")
+    parser.add_argument("--dry-run", action="store_true", help="preview --switch, --switch-next or --undo-switch without changing Claude auth")
+    parser.add_argument("--name", metavar="NAME", help="display name for --add or --capture when identity is unavailable")
+    parser.add_argument("--credential-file", type=Path, metavar="FILE",
+                        help="read-only Claude/Codex source for --capture (default: provider CLI credentials)")
+    parser.add_argument("--muse-team", metavar="ID", help="Meta portal team ID for --capture; otherwise select interactively")
+    parser.add_argument("--json", action="store_true", help="emit structured JSON with full details and no credentials")
+    parser.add_argument("--jobs", type=int, choices=range(1, 9), default=4, metavar="1-8",
                         help="concurrent foreground account checks (default: 4; use 1 for sequential checks)")
-    parser.add_argument("--sort", choices=SORT_COLUMNS, default="recommended",
-                        help="sort within provider groups (default: recommended; balances remaining capacity and time to reset)")
+    parser.add_argument("--sort", choices=SORT_COLUMNS, default="recommended", metavar="COLUMN",
+                        help="sort within groups: recommended (default), name, plan, 5h, 7d, 5h-reset, 7d-reset, status")
     parser.add_argument("--reverse", action="store_true", help="sort descending within each provider group; unknowns stay last")
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                         help="terminal colours (default: auto; respects NO_COLOR and redirected output)")
     parser.add_argument("--verbose", "-v", action="store_true",
-                        help="include notices, account details, and error explanations (JSON always includes full details)")
+                        help="show notices, exact local resets, model allowances and error details")
     args = None
     try:
         args = parser.parse_args(argv)
@@ -927,7 +991,12 @@ def main(argv=None):
             data = sort_report(data, args.sort, args.reverse)
             print(json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) if args.json else render(data, dt.datetime.now(UTC), verbose=args.verbose, color=color_enabled(args.color)))
             return 0 if data["live"] else 1
-        with Store(args.data_dir, create=args.setup) as store:
+        with Store(args.data_dir, create=args.setup, maintenance=args.change_password) as store:
+            if args.change_password:
+                import vault_password
+                result = vault_password.change(store, args.data_dir)
+                print(json.dumps(result) if args.json else result["message"])
+                return 1 if result.get("background_error") else 0
             if args.lock:
                 import auth_renewal
                 auth_renewal.stop(store)

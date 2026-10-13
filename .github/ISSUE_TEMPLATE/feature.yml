@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a focused improvement to the CLI.
+title: '[Feature] '
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would this help you do?
+      description: Describe the task or limitation, using fake examples if helpful.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested behaviour
+      description: Include alternatives you have considered. Keep credentials and private account data out of the issue.

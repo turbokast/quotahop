@@ -17,6 +17,7 @@ build/
 accounts.json
 vault.json
 renewal.json
+vault-rekey.json
 .credentials.json
 auth.json
 .DS_Store

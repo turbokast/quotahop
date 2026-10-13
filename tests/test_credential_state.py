@@ -93,6 +93,15 @@ class SelectionTests(unittest.TestCase):
         table_lines = [line for line in plain.splitlines() if line.startswith(("╭", "│", "├", "╰"))]
         self.assertEqual(len({app.display_width(line) for line in table_lines}), 1)
 
+    def test_compact_ready_retains_live_status_and_explains_checkmark(self):
+        result = self.annotate()
+        text = app.render(result, NOW, width=100)
+        table_lines = [line for line in text.splitlines() if line.startswith("│")]
+        self.assertTrue(any("● LIVE ✓" in line for line in table_lines))
+        self.assertTrue(any("● LIVE" in line and "✓" not in line for line in table_lines))
+        self.assertIn("not renewal status", text)
+        self.assertTrue(all(app.display_width(line) <= 100 for line in text.splitlines()))
+
     def test_only_read_only_credential_files_are_opened_and_no_process_or_network(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
             root = Path(tmp)

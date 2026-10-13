@@ -3,6 +3,15 @@
 See [README](README.md) for installation and a quick start.
 `./quotahop` and the original `./claude-usage` command are equivalent.
 
+To change or reset the vault password without losing accounts, use
+`quotahop --change-password` (alias `--reset-password`). See the
+[password-change guide](README.md#change-the-vault-password) for worker restart,
+interruption recovery, and forgotten-password limitations.
+
+In the compact report, `● LIVE` means usage was fetched successfully;
+`● LIVE ✓` additionally marks a Claude switching candidate. The checkmark is
+not a background-renewal indicator; use `--background status` for that.
+
 Checks **Claude, Codex, and Muse Code subscription quotas**, then exits.
 Claude/Codex use one GET each. Muse portal sources use one identity GET and one subscription
 quota GET for the portal team you select. Ordinary reports perform no inference, login,

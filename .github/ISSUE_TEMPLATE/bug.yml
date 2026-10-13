@@ -1,0 +1,28 @@
+name: Bug report
+description: Report unexpected behaviour with a safe reproduction.
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: Please use fake account names. Never attach credentials, account files, or vaults. Report vulnerabilities through the Security tab instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include what you expected and the relevant command, without secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Prefer fake data. Redact emails, account identifiers and credentials from any output.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Ubuntu/Linux version, Python version, QuotaHop commit, and affected provider. No account details needed.
+    validations:
+      required: true

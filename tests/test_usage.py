@@ -178,7 +178,8 @@ class StorageAndCLITests(unittest.TestCase):
         code, out, err = self.run_cli()
         self.assertEqual(code, 3)
         self.assertEqual(err, "")
-        self.assertEqual(len(out.splitlines()), 14)  # Table plus the requested selection key.
+        self.assertEqual(len(out.splitlines()), 15)  # Table plus selection and LIVE/readiness keys.
+        self.assertIn("usage fetched", out)
         self.assertTrue(out.startswith("╭─ Anthropic "))
         self.assertIn("42%", out)
         self.assertIn("Sign in", out)

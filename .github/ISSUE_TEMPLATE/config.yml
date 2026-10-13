@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/turbokast/quotahop/security/advisories/new
+    about: Do not post tokens, passwords, cookies or vault files, even encrypted.
+  - name: Read the usage guide
+    url: https://github.com/turbokast/quotahop/blob/main/USAGE.md
+    about: Setup, authentication boundaries, provider limitations and troubleshooting.
