@@ -254,12 +254,15 @@ def encrypt_vault(entries, key, salt):
             "ciphertext": base64.b64encode(encrypted).decode()}
 
 
-def load_vault(store, *, verbose=False):
+def load_vault(store, *, verbose=False, accounts=None):
     try:
         envelope = store.read("vault.json")
     except FileNotFoundError:
         return {}
-    entries, _, _ = unlock_cached(store, envelope, verbose=verbose)
+    entries, key, _ = unlock_cached(store, envelope, verbose=verbose)
+    if accounts is not None:
+        import saved_refresh
+        entries = saved_refresh.follow_cli(store, accounts, entries, key)
     return entries
 
 

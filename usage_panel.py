@@ -85,8 +85,11 @@ class Source:
             return accounts, app.account_identity.for_report(entries)
 
 
-def collect(path, accounts, entries, jobs, sort, reverse):
+def collect(path, accounts, entries, jobs, sort, reverse, *, vault_key=None):
     with app.Store(path) as store:
+        if vault_key is not None:
+            import saved_refresh
+            entries = saved_refresh.follow_cli(store, accounts, entries, vault_key)
         before = credential_state.current(accounts, entries)
         data = app.concurrent_report(accounts, store, dt.datetime.now(app.UTC), entries, jobs)
         data = credential_state.annotate(data, entries, before,
@@ -431,7 +434,7 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
             if not paused and confirmation is None and fetch is None and now >= max(due, retry_at):
                 try:
                     accounts, entries = source.load()
-                    fetch = Fetch(lambda: collect(source.path, accounts, entries, jobs, sort, reverse))
+                    fetch = Fetch(lambda: collect(source.path, accounts, entries, jobs, sort, reverse, vault_key=source.key))
                     del entries  # Only this batch's child retains the credentials.
                     last_start, message = now, "Checking…"
                 except (app.UsageError, live.LiveError, OSError, ValueError):
@@ -449,7 +452,7 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                 body = panel_switch.confirmation_lines(confirmation, width)
             else:
                 body = lines(data, width, utc, details=details, selected_provider=selected_provider)
-            footer_count = 3 if details else 1
+            footer_count = 1 if confirmation else 3
             visible = max(0, height - 2 - footer_count)
             scroll = min(max(0, scroll), max(0, len(body) - visible))
             if not details and not confirmation and visible >= 3:
@@ -480,7 +483,8 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
             footers = ["▶ selected ○ standby ? unknown ✓ ready", "r refresh  p pause  d details  ↑↓ scroll",
                        "u unlock · l lock · q close"]
             if not details:
-                footers = ["↑↓ provider · Enter switch" if selected_provider == "claude" else "↑↓ provider · View only"]
+                footers = ["↑↓ provider · Enter switch" if selected_provider == "claude" else "↑↓ provider · View only",
+                           "r refresh · d more · p pause", "u unlock · l lock · q close"]
             if confirmation:
                 footers = ["Enter confirm · Esc cancel"]
             if details and len(body) > visible:

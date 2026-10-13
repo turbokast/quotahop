@@ -324,6 +324,7 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
             selector = recommended_account(store, accounts, entries, plan, jobs)
         credential_path, metadata_path = paths()
         backup = None
+        handoff = None
         if undo:
             try:
                 backup_envelope = store.read(BACKUP)
@@ -353,6 +354,12 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
                 if recommendation(usage, dt.datetime.now(UTC))[0] >= 2:
                     fail("The confirmed subscription no longer has verified available usage. Refresh and choose again.")
             oauth, account = target_auth(selected, entry)
+            import auth_renewal
+            handoff = auth_renewal.claude_handoff(store, key, selected['id'], entry)
+            if handoff is not None:
+                # The first-party CLI becomes the sole renewal owner. Retiring
+                # our grant is committed under the same vault lock before writes.
+                oauth = handoff
             label = account["emailAddress"]
         selection = {} if undo else {"account_id": selected["id"], "plan": selected["plan"],
                                     "selection": "recommended" if automatic else "explicit"}
@@ -376,7 +383,7 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
                     fail("The current Claude login changed while confirming. Refresh and choose again; no auth changed.")
             if undo and current["claudeAiOauth"].get("accessToken") != backup["installed_token"]:
                 fail("Claude authentication changed since the switch; undo refused to avoid overwriting it.")
-            if not undo and current["claudeAiOauth"].get("accessToken") == oauth["accessToken"]:
+            if not undo and current["claudeAiOauth"].get("accessToken") == oauth["accessToken"] and handoff is None:
                 return {"message": "This Claude access token is already selected; no files changed.", "account_name": label, "changed": False, **selection}
             # Preflight replacement before storing backup or touching live files.
             replace_value(before_creds, "claudeAiOauth", oauth)
@@ -390,13 +397,14 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
                 backup = {"paths": [str(credentials.path), str(metadata.path)], "installed_token": oauth["accessToken"],
                           "claudeAiOauth": current["claudeAiOauth"], "oauthAccount": config["oauthAccount"]}
                 store.write(BACKUP, live.encrypt_vault(backup, key, salt), replace=True)
+                if handoff is not None:
+                    auth_renewal.commit_claude_handoff(store, key, selected['id'], entry)
             apply(credentials, metadata, oauth, account, before_creds, before_meta, guard)
             if undo:
                 store.delete(BACKUP)
         return {"message": ("Restored the previous Claude Code authentication." if undo else
-                "Switched shared Claude Code subscription. Background renewal updates enrolled vault credentials; "
-                "this global access token is not updated automatically. Re-run --switch or --switch-next to apply "
-                "a renewed token. Existing sessions may need to reload their credentials."),
+                "Switched shared Claude Code subscription. Claude Code now owns renewal of this grant; QuotaHop will never refresh it again. Existing sessions may need to reload credentials." if handoff is not None else
+                "Switched shared Claude Code subscription using an access-only capture. No automatic renewal for this token; re-enroll for a fresh independent grant. Existing sessions may need to reload credentials."),
                 "account_name": label, "changed": True, **selection}
     except OSError:
         fail("Cannot read/write the Claude authentication files safely. Check access and permissions; no login or refresh was attempted.")

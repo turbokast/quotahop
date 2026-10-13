@@ -320,13 +320,24 @@ class EntryTests(unittest.TestCase):
     def test_plugin_open_targets_caller_and_preserves_focus(self):
         layout = {'layout': {'panes': [{'pane_id': 'w1:p1', 'rect': {'width': 172}}]}}
         opened = {'plugin_pane': {'pane': {'pane_id': 'w1:p3'}}}
+        measured = {'layout': {'panes': [{'pane_id': 'w1:p3', 'rect': {'width': 86}}]}}
         with patch.object(plugin, 'config', return_value=['/fake/quotahop', '--panel']), \
              patch.dict(os.environ, {'HERDR_ENV': '1', 'HERDR_PANE_ID': 'w1:p1'}), \
-             patch.object(plugin, 'herdr', side_effect=[layout, opened, {}]) as call:
+             patch.object(plugin, 'herdr', side_effect=[layout, opened, measured, {}]) as call:
             self.assertEqual(plugin.main(['open']), 0)
         self.assertIn('--no-focus', call.call_args_list[1].args)
         self.assertIn('w1:p1', call.call_args_list[1].args)
         self.assertIn('w1:p3', call.call_args_list[2].args)
+
+    def test_plugin_expands_a_restored_narrow_split(self):
+        layout = {'layout': {'panes': [{'pane_id': 'w1:p1', 'rect': {'width': 164}}]}}
+        opened = {'plugin_pane': {'pane': {'pane_id': 'w1:p3'}}}
+        measured = {'layout': {'panes': [{'pane_id': 'w1:p3', 'rect': {'width': 25}}]}}
+        with patch.object(plugin, 'config', return_value=['/fake/quotahop', '--panel']), \
+             patch.dict(os.environ, {'HERDR_ENV': '1', 'HERDR_PANE_ID': 'w1:p1'}), \
+             patch.object(plugin, 'herdr', side_effect=[layout, opened, measured, {}]) as call:
+            self.assertEqual(plugin.main(['open']), 0)
+        self.assertEqual(call.call_args.args[-3:], ('left', '--amount', '0.0488'))
 
 
 class LifecycleTests(unittest.TestCase):

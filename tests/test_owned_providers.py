@@ -48,7 +48,8 @@ def muse_pair():
 def record(provider, auth, entry, due=False):
     return {'origin': renewal.ORIGINS[provider], 'auth': auth, 'entry': entry, 'state': 'ready',
             'next_at': time.time() - 1 if due else entry['expires_at'] - 300,
-            'published': renewal.digest(entry), 'updated_at': time.time()}
+            'published': renewal.digest(entry), 'updated_at': time.time(),
+            **({'ownership': 'private'} if provider == 'claude' else {})}
 
 
 class ProviderTests(unittest.TestCase):
@@ -99,6 +100,32 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaises(app.UsageError):
             renewal.choose(self.accounts, entries, EMAIL)
         self.assertEqual(renewal.choose(self.accounts, entries, EMAIL, 'team_premium')['id'], 'team-1')
+
+    def test_legacy_grants_are_held_even_after_switching_away(self):
+        auth, entry = claude_pair()
+        item = record('claude', auth, entry, True)
+        item.pop('ownership')
+        self.save({'max-1': entry}, {'max-1': item})
+        with patch.object(claude, 'perform', side_effect=AssertionError('must never rotate an exposed grant')), \
+             patch.object(live, 'read_access_token', side_effect=AssertionError('current file is not evidence of old sessions')):
+            renewal.cycle(self.store, KEY)
+            renewal.cycle(self.store, KEY)
+        status = renewal.status(self.store, self.accounts)['accounts'][0]
+        self.assertEqual(status['state'], 'legacy_hold')
+        self.assertIsNone(status['next_at'])
+        self.assertEqual(live.load_vault(self.store)['max-1'], entry)
+
+    def test_handed_off_grant_is_never_renewed_or_replayed(self):
+        auth, entry = claude_pair()
+        self.save({'max-1': entry}, {'max-1': record('claude', auth, entry, True)})
+        self.assertEqual(renewal.claude_handoff(self.store, KEY, 'max-1', entry), auth['claudeAiOauth'])
+        renewal.commit_claude_handoff(self.store, KEY, 'max-1', entry)
+        with patch.object(claude, 'perform', side_effect=AssertionError('CLI owns refresh')):
+            renewal.cycle(self.store, KEY)
+            renewal.cycle(self.store, KEY, now=entry['expires_at'] + 86400)
+        self.assertIsNone(renewal.claude_handoff(self.store, KEY, 'max-1', entry))
+        self.assertEqual(renewal.records(self.store, KEY)['max-1']['state'], 'cli_owned')
+        self.assertEqual(renewal.status(self.store, self.accounts)['accounts'][0]['mode'], 'cli_renewal')
 
     def test_expired_legacy_claude_capture_does_not_block_new_enrollment(self):
         _, previous = claude_pair('expired', plan='team_premium')

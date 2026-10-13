@@ -27,6 +27,14 @@ release branches at present.
   switches, including a confirmed panel action, modify the shared subscription
   login; isolated enrollment owns its
   separate grants. See [USAGE.md](USAGE.md) for the precise boundaries.
+- An explicit Claude switch transfers an independently enrolled grant to the
+  first-party CLI. QuotaHop durably retires its renewal ownership before exposing
+  the grant, including when a switch later fails or rolls back. It never renews
+  that grant again, even after switching away. Older Claude grants without an
+  ownership record are held instead of refreshed because a running session may
+  still use a previously exported token. Reports follow CLI-owned access tokens
+  through read-only file reads and a matching account/organisation profile check;
+  they never copy a CLI refresh token back into the renewal worker.
 - Usage clients restrict endpoint paths and methods. No inference is performed.
   Muse CLI quota retrieval uses an explicitly selected bootstrap POST, whose
   server-side behaviour is not guaranteed to remain read-only.

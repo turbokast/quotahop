@@ -152,9 +152,11 @@ security boundaries and marketplace publication.
 
 These explicit actions change the **shared Claude Code subscription login**.
 They preserve Claude Design, MCP auth, and unrelated configuration, without
-symlinks or global environment changes. The shared login receives an access
-token, not an independently owned refresh token. Existing sessions may need to
-reload credentials. Codex and Muse switching are not implemented.
+symlinks or global environment changes. For an independently enrolled Claude
+grant, switching transfers its complete credentials to Claude Code and permanently
+stops QuotaHop renewing that grant **before** writing the CLI files. Captured
+logins remain access-only. Existing sessions may need to reload credentials.
+Codex and Muse switching are not implemented.
 
 ## Add Muse Code
 
@@ -200,14 +202,23 @@ are never imported. If isolation cannot be established, enrollment fails.
 Use a saved ID, email, or name. Add a new row with `--add` first; `--plan` resolves
 ambiguous subscriptions.
 
-**Successful enrollment starts a background worker.** Claude and Codex renew
-before expiry. Muse tracks expiry but cannot automatically renew its device
+**Successful enrollment starts a background worker.** Private Claude standby
+grants and Codex grants renew before expiry. Muse tracks expiry but cannot automatically renew its device
 token. The worker keeps the vault key in memory and never polls quota or switches
 global auth. No service, cron job, or boot startup is installed.
 
-Renewal updates **the vault**. Run `--switch` or `--switch-next` to install a renewed
-Claude token globally. Uncertain refresh outcomes suspend the account rather
-than replay a potentially consumed refresh token.
+Renewal updates **the vault**. Run `--switch` or `--switch-next` to hand a private
+Claude grant to Claude Code. It then becomes `cli_owned`: only Claude Code may
+renew it, even after you switch away. Reports safely follow a newer current CLI
+access token after verifying its account and organisation. Uncertain refresh
+outcomes suspend the account rather than replay a potentially consumed token.
+
+Older Claude grants without ownership tracking show `legacy_hold`; they might
+already be used by running sessions, so QuotaHop will not rotate them. An explicit
+switch can transfer a still-valid grant to Claude Code. For an expired grant or
+a new automatically renewed standby grant, use `--auth-forget ACCOUNT` followed
+by `--auth-enroll ACCOUNT` (add `--plan` when ambiguous). This does not log out or
+revoke the old session. A provider-revoked grant still requires a fresh sign-in.
 
 Claude 2.1.296 and Muse 1.4.6-R6000.1 authentication are pinned to inspected
 Linux executable hashes. Other builds, even with the same version, are refused

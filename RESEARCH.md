@@ -561,3 +561,22 @@ they remain encrypted and never enter the report or access-only capture. A fresh
 offline fake-grant renewal verified native persistence of both fields and the
 same token/profile-only request trace. The earlier six-field fixtures missed
 this real login format and caused successful enrollment to be rejected.
+
+### Claude renewal ownership correction (2026-10-13)
+
+A reported revoked-token incident exposed an ownership error: the tool renewed
+an isolated grant after exporting its access token to a live Claude session,
+leaving the CLI with the previous token. Local timestamps aligned with the
+reported failure; the newly issued token passed the read-only profile check.
+Filesystem isolation alone does not keep a grant private once its token is used
+elsewhere. Upstream reports also describe refresh races and revocation, but
+these reports are not a provider guarantee about every token's lifetime:
+[concurrent-session refresh report](https://github.com/anthropics/claude-code/issues/41507).
+
+An explicit switch now retires tool renewal before handing the complete grant
+to Claude Code. Retirement survives failure, rollback and switching away.
+Existing grants without an exposure history are held instead of refreshed.
+Only newly enrolled, never-exported Claude grants remain eligible for private
+background renewal. This avoids assuming that a missing current-file match
+means no running session still uses the grant. Recovery of a running process
+holding an old token may still require restarting/resuming that process.

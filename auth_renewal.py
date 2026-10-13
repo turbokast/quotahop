@@ -68,8 +68,9 @@ def records(store, key):
                                                  base64.b64decode(envelope['ciphertext'], validate=True), AAD))
         for ident, item in value.items():
             if (not isinstance(item, dict) or item.get('origin') not in ORIGINS.values()
-                    or item.get('state') not in ('ready', 'in_flight', 'suspended', 'reauth_required')
-                    or set(item) != {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at'}):
+                    or item.get('state') not in ('ready', 'in_flight', 'suspended', 'reauth_required', 'cli_owned', 'legacy_hold')
+                    or set(item) - {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at', 'ownership'}
+                    or not {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at'} <= set(item)):
                 raise ValueError()
             provider = next(p for p, origin in ORIGINS.items() if origin == item['origin'])
             BACKENDS[provider].validate_auth(item['auth'])
@@ -85,6 +86,15 @@ def records(store, key):
                     raise ValueError()
             elif not BACKENDS[provider].matches(item['auth'], item['entry']):
                 raise ValueError()
+            if 'ownership' in item and item['ownership'] not in ('private', 'cli'):
+                raise ValueError()
+            if provider == 'claude':
+                if item.get('ownership') == 'cli':
+                    item['state'] = 'cli_owned'
+                elif 'ownership' not in item and item['state'] == 'ready':
+                    # Old versions exported access tokens without tracking use by
+                    # live sessions. An absent current-file match proves nothing.
+                    item['state'] = 'legacy_hold'
         return value
     except Exception:
         raise live.LiveError('renewal_locked', 'Cannot read encrypted renewal grants; no authentication attempted.') from None
@@ -174,6 +184,37 @@ def enrolled(store, key, ident):
     return ident in records(store, key)
 
 
+def claude_handoff(store, key, ident, entry):
+    """Prepare a grant for one-way transfer. Caller holds the vault lock.
+
+    Never replay a grant already handed to a CLI, even after switching away.
+    A legacy isolated grant can be transferred once, but cannot auto-renew.
+    """
+    item = records(store, key).get(ident)
+    if (not item or item['origin'] != owned_claude.ORIGIN
+            or item['state'] not in ('ready', 'legacy_hold')
+            or item.get('ownership') == 'cli'):
+        return None
+    if not owned_claude.matches(item['auth'], entry):
+        raise live.LiveError('grant_changed', 'Saved access token differs from its independent grant; switch refused to avoid exporting an older token.')
+    return dict(item['auth']['claudeAiOauth'])
+
+
+def commit_claude_handoff(store, key, ident, entry):
+    """Retire renewal durably BEFORE any CLI write. Failure never re-enables it."""
+    saved = records(store, key)
+    item = saved.get(ident)
+    if item is None or item['origin'] != owned_claude.ORIGIN:
+        return
+    if not owned_claude.matches(item['auth'], entry):
+        raise live.LiveError('grant_changed', 'Claude grant changed before handoff; no authentication changed.')
+    item.update(state='cli_owned', ownership='cli')
+    store.write(REGISTRY, seal(saved, key), replace=True)
+    from claude_usage import validate_accounts
+    accounts = validate_accounts(store.read('accounts.json'))
+    store.write(STATUS, public_status(accounts, saved, active=running(store)), replace=True)
+
+
 def forget_locked(store, key, ident):
     saved = records(store, key)
     if ident in saved:
@@ -224,6 +265,8 @@ def enroll(store, accounts, selector, plan=None, *, unlock_key=None):
             now = time.time()
             saved[account['id']] = {'origin': ORIGINS[provider], 'auth': auth, 'entry': entry,
                 'state': 'ready', 'next_at': entry['expires_at'] - (0 if provider == 'muse_code' else 300), 'published': digest(previous), 'updated_at': now}
+            if provider == 'claude':
+                saved[account['id']]['ownership'] = 'private'
             # Persist the rotated/independent grant before publishing its access token.
             store.write(REGISTRY, seal(saved, key), replace=True)
             current[account['id']] = entry
@@ -285,12 +328,16 @@ def public_status(accounts, saved, *, active=False):
         provider = provider_for(account)
         state = item['state'] if item else 'needs_enrollment'
         mode = 'expiry_tracking' if provider == 'muse_code' else 'automatic_renewal'
+        if state in ('cli_owned', 'legacy_hold'):
+            mode = 'cli_renewal' if state == 'cli_owned' else 'renewal_hold'
         rows.append({'id': account['id'], 'name': account['name'], 'provider': provider, 'state': state, 'mode': mode,
                      'next_at': item['next_at'] if item and state == 'ready' else None,
                      'expires_at': item['entry']['expires_at'] if item else None,
-                     'message': ('Renewal outcome uncertain: re-enroll; automatic retries disabled.' if state in ('in_flight', 'suspended')
+                     'message': ('Claude Code owns this grant; QuotaHop will never refresh it. Re-enroll for a new independent standby grant.' if state == 'cli_owned'
+                                 else 'Legacy Claude grant may be in use by a session. Automatic renewal blocked; explicitly switch to hand it to Claude Code, or re-enroll.' if state == 'legacy_hold'
+                                 else 'Renewal outcome uncertain: re-enroll; automatic retries disabled.' if state in ('in_flight', 'suspended')
                                  else LIMITATIONS[provider] if provider == 'muse_code' else 'Independent grant; renews five minutes before expiry.' if item else LIMITATIONS[provider])})
-    return {'running': active, 'checked_at': time.time(), 'accounts': rows}
+    return {'running': active, 'checked_at': time.time(), 'ownership_version': 2, 'accounts': rows}
 
 
 def status(store, accounts):
@@ -307,6 +354,11 @@ def status(store, accounts):
                           if a['id'] in old and old[a['id']].get('provider') == a['provider'] and old[a['id']].get('state') != 'unsupported' else a
                           for a in defaults]
     result['running'] = active
+    if result.get('ownership_version') != 2:
+        for row in result['accounts']:
+            if row['provider'] == 'claude' and row['state'] == 'ready':
+                row.update(state='legacy_hold', mode='renewal_hold', next_at=None,
+                           message='Legacy grant ownership is unknown; automatic renewal is blocked by this version.')
     result['message'] = ('Independent sign-in is running in another terminal.' if result.get('operation') == 'enrollment'
                          else 'Background renewal running; vault key held in memory.') if active else 'Background renewal stopped; no automatic renewal is running.'
     return result
@@ -395,7 +447,7 @@ def start(store, data_dir, *, key=None):
                 live.unlock_vault(store.read('vault.json'), None, key=key)
             saved = records(store, key)
             if not any(i['state'] == 'ready' for i in saved.values()):
-                raise live.LiveError('enrollment_required', 'No enrolled grants. Use --auth-enroll ACCOUNT first.')
+                raise live.LiveError('enrollment_required', 'No grants eligible for QuotaHop renewal. CLI-owned and legacy-held Claude grants cannot be renewed here; enroll a fresh independent standby grant with --auth-enroll.')
             store.delete(STOP)
     read_fd, write_fd = os.pipe()
     ready_read, ready_write = os.pipe()

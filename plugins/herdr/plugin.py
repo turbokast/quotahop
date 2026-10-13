@@ -62,13 +62,16 @@ def main(argv=None):
                        "--entrypoint", "usage", "--target-pane", target,
                        "--direction", "right", "--no-focus")
         pane = result["plugin_pane"]["pane"]["pane_id"]
-        # Resize only this newly created split. Small terminals retain equal halves.
+        # Herdr can restore an old split ratio; measure instead of assuming 50/50.
         if rectangle["width"] > 90:
-            amount = max(0, 0.5 - 32 / rectangle["width"])
             try:
-                herdr("pane", "resize", "--pane", pane, "--direction", "right",
-                      "--amount", f"{amount:.4f}")
-            except (ValueError, OSError, subprocess.TimeoutExpired):
+                actual = herdr("pane", "layout", "--pane", pane)["layout"]
+                width = next(p['rect']['width'] for p in actual['panes'] if p['pane_id'] == pane)
+                delta = width - 33  # 32 usable columns plus curses' wrap column.
+                if abs(delta) > 1:
+                    herdr("pane", "resize", "--pane", pane, "--direction", "right" if delta > 0 else "left",
+                          "--amount", f"{abs(delta) / rectangle['width']:.4f}")
+            except (ValueError, KeyError, StopIteration, OSError, subprocess.TimeoutExpired):
                 print("Panel opened; resize it with Herdr's normal pane controls.", file=sys.stderr)
         return 0
     except (ValueError, KeyError, StopIteration, OSError, subprocess.TimeoutExpired):

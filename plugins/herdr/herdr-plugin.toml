@@ -1,6 +1,6 @@
 id = "turbokast.quotahop"
 name = "QuotaHop"
-version = "0.3.0"
+version = "0.3.1"
 min_herdr_version = "0.9.1"
 description = "Usage remaining on your active and next Claude, Codex and Muse subscriptions. Uses your installed QuotaHop vault."
 platforms = ["linux"]

@@ -946,8 +946,10 @@ Examples:
 
 Authentication:
   --auth-enroll starts background maintenance after a separate sign-in.
-  Claude/Codex: automatic renewal. Muse: expiry tracking, no device-token renewal.
-  Renewal updates this vault; --switch installs a Claude access token globally.
+  Private Claude/Codex grants: automatic renewal.
+  Muse: expiry tracking, no device-token renewal.
+  --switch hands enrolled Claude grants to Claude Code, which then owns renewal.
+  Previously shared Claude grants are held from tool renewal for session safety.
   --muse-cli-current uses a bootstrap POST, not a read-only API contract.
   Enter passwords only at hidden prompts, never in arguments or configuration.
 
@@ -1161,7 +1163,7 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 import saved_refresh
                 entries, refresh_notes = saved_refresh.refresh(store, accounts)
             else:
-                entries = live_usage.load_vault(store, verbose=args.verbose and not args.json)
+                entries = live_usage.load_vault(store, verbose=args.verbose and not args.json, accounts=accounts)
             entries = account_identity.for_report(entries)
             import credential_state
             before = credential_state.current(accounts, entries)

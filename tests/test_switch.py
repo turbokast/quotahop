@@ -75,6 +75,77 @@ class SwitchTests(unittest.TestCase):
     def save_vault(self):
         self.store.write("vault.json", live.encrypt_vault(self.entries, KEY, SALT), replace=True)
 
+    def enrolled_claude(self):
+        import auth_renewal as renewal
+        oauth = {'accessToken': TOKEN, 'refreshToken': 'FAKE-INDEPENDENT-REFRESH',
+                 'expiresAt': self.entry['expires_at'] * 1000,
+                 'scopes': ['user:profile', 'user:inference'], 'subscriptionType': 'max'}
+        item = {'origin': renewal.ORIGINS['claude'], 'auth': {'claudeAiOauth': oauth},
+                'entry': self.entry, 'state': 'ready', 'next_at': time.time()-1,
+                'published': renewal.digest(self.entry), 'updated_at': time.time(), 'ownership': 'private'}
+        self.store.write(renewal.REGISTRY, renewal.seal({'max-1': item}, KEY), replace=True)
+        return oauth
+
+    def test_enrolled_switch_transfers_renewal_before_writing_cli_and_never_replays(self):
+        import auth_renewal as renewal
+        oauth = self.enrolled_claude()
+        original = switch.apply
+        def apply(*args):
+            self.assertEqual(renewal.records(self.store, KEY)['max-1']['state'], 'cli_owned')
+            return original(*args)
+        with patch.object(switch, 'apply', side_effect=apply):
+            code, result = self.cli('--switch', 'max-1')
+        self.assertEqual(code, 0, result)
+        self.assertIn('Claude Code now owns renewal', result['message'])
+        self.assertEqual(live.json_object(self.creds.read_bytes())['claudeAiOauth'], oauth)
+        with patch('owned_claude.perform', side_effect=AssertionError('already exported')):
+            renewal.cycle(self.store, KEY, now=time.time()+86400)
+        self.assert_unrelated_unchanged()
+
+    def test_handoff_dry_run_does_not_retire_or_export_grant(self):
+        import auth_renewal as renewal
+        self.enrolled_claude()
+        before = self.store.read(renewal.REGISTRY)
+        self.assertEqual(self.cli('--switch', 'max-1', '--dry-run')[0], 0)
+        self.assertEqual(self.store.read(renewal.REGISTRY), before)
+        self.assert_original()
+
+    def test_reports_follow_native_renewal_after_handoff_without_auth_writes(self):
+        import auth_renewal as renewal
+        self.bound_entry()
+        self.enrolled_claude()
+        renewal.commit_claude_handoff(self.store, KEY, 'max-1', self.entry)
+        fresh = self.fresh_entry()
+        with patch.object(live, 'read_access_token', return_value=fresh), \
+             patch('owned_claude.perform', side_effect=AssertionError('no refresh')):
+            entries = live.load_vault(self.store, accounts=self.accounts)
+            self.assertEqual(entries['max-1']['access_token'], fresh['access_token'])
+            count = self.network.call_count
+            self.assertEqual(live.load_vault(self.store, accounts=self.accounts), entries)
+            self.assertEqual(self.network.call_count, count)
+        self.assertEqual(renewal.records(self.store, KEY)['max-1']['state'], 'cli_owned')
+        self.assertNotIn('refreshToken', json.dumps(entries))
+        self.assert_original()
+
+    def test_failed_handoff_never_reenables_renewal(self):
+        import auth_renewal as renewal
+        self.enrolled_claude()
+        with patch.object(switch, 'apply', side_effect=OSError('fake write failure')):
+            self.assertEqual(self.cli('--switch', 'max-1')[0], 2)
+        self.assertEqual(renewal.records(self.store, KEY)['max-1']['state'], 'cli_owned')
+        self.assert_original()
+
+    def test_same_access_token_can_upgrade_access_only_installation_once(self):
+        import auth_renewal as renewal
+        oauth = self.enrolled_claude()
+        installed = {**self.original_oauth, 'accessToken': TOKEN, 'refreshToken': None}
+        self.creds.write_bytes(switch.replace_value(self.original_creds, 'claudeAiOauth', installed))
+        code, result = self.cli('--switch', 'max-1')
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['changed'])
+        self.assertEqual(live.json_object(self.creds.read_bytes())['claudeAiOauth'], oauth)
+        self.assertIsNone(renewal.claude_handoff(self.store, KEY, 'max-1', self.entry))
+
     def cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
         before_env = dict(os.environ)

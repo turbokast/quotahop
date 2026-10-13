@@ -102,9 +102,20 @@ Offline tests verified that this saves the rotated grant without inference.
 `claude auth status` is unsuitable because it can exit before saving rotation.
 
 Renewal updates only this tool's encrypted grant and access-token vault. Use
-`--switch` or `--switch-next` to install a refreshed Claude access token globally;
-the worker never performs that switch itself. The shared CLI receives no owned
-refresh token. `--refresh` cannot replace enrolled grants with shared CLI copies.
+`--switch` or `--switch-next` to transfer an independently enrolled Claude grant
+to Claude Code; the worker never performs that switch itself. Before any CLI
+write, the tool permanently marks that grant `cli_owned` and stops renewing it.
+Claude Code receives the complete matching grant and becomes its renewal owner.
+Reports and panels can copy a newer access token back from the current CLI after
+a server-verified account/organisation match, but never copy its refresh token.
+
+Legacy Claude grants without ownership tracking are `legacy_hold`, not safe
+background-renewal candidates: a running session may still use their access
+tokens even when another login is selected. A valid legacy grant may be handed
+off once by an explicit switch. To create a fresh privately renewed standby
+grant, forget the old enrollment and enroll again. A handed-off grant never
+becomes privately renewable just because you switched away. Failed handoff writes
+also remain held; no rollback can make a potentially exposed grant safe to rotate.
 Reports remain on demand; the worker does not poll quotas. Muse expiry tracking
 performs no network requests or key exchanges.
 
@@ -265,6 +276,11 @@ replaced as one filesystem transaction: a failed second write triggers rollback
 of only the auth fields. Locks and temporary files are removed on normal completion
 or handled errors. Hard termination can leave a lock or partial switch; an
 encrypted undo record is written before changing either auth file.
+
+**Independent Claude enrollments transfer renewal ownership.** A switch hands
+the complete matching grant to Claude Code and permanently disables QuotaHop
+renewal for it first. `--dry-run` changes neither ownership nor provider files.
+Restoring an undo record never transfers renewal ownership back to QuotaHop.
 
 **Captured logins are access-token-only.** The target receives no refresh token;
 the previous account's refresh token is never mixed with a different access token.

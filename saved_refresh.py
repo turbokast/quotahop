@@ -2,6 +2,7 @@
 
 Only --refresh establishes server-verified account/organization bindings.
 --switch-next may reuse them to pick up the current CLI's newer access token.
+Reports also follow newer CLI access tokens for grants handed to Claude Code.
 Inactive expired grants cannot be renewed safely from the captured credentials.
 """
 import fcntl
@@ -33,7 +34,8 @@ def synchronize(store, accounts, entries, key, salt, *, establish=False):
     managed = auth_renewal.records(store, key)
     updated = dict(entries)
     notes = []
-    candidates = [a for a in accounts if a["plan"] in ("max_20x", "team_premium") and a["id"] in entries and a["id"] not in managed]
+    candidates = [a for a in accounts if a["plan"] in ("max_20x", "team_premium") and a["id"] in entries
+                  and (a["id"] not in managed or managed[a["id"]]['state'] == 'cli_owned')]
     if establish:
         # Run once to bind each existing token to its server-reported account
         # and organization. Never guess from email or mutable local metadata.
@@ -89,6 +91,23 @@ def synchronize(store, accounts, entries, key, salt, *, establish=False):
     if updated != entries:
         store.write("vault.json", live.encrypt_vault(updated, key, salt), replace=True)
     return updated, notes
+
+
+def follow_cli(store, accounts, entries, key):
+    """Follow only grants explicitly handed to Claude; no renewal or CLI writes."""
+    import auth_renewal
+    saved = auth_renewal.records(store, key)
+    owned = [a for a in accounts if saved.get(a['id'], {}).get('state') == 'cli_owned']
+    if not owned:
+        return entries
+    try:
+        with auth_renewal.vault_lock(store):
+            current, _, salt = live.unlock_vault(store.read('vault.json'), None, key=key)
+            return synchronize(store, owned, current, key, salt)[0]
+    except live.LiveError as exc:
+        if exc.code != 'vault_busy':
+            raise
+        return entries
 
 
 def refresh(store, accounts):

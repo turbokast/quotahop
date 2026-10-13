@@ -169,6 +169,11 @@ their displays, checked about once per second. A password change invalidates
 the panel's old key on its next check. `l` locks only this panel, leaving the
 normal cache and independent renewal worker alone.
 
+After a confirmed Claude switch, the first-party CLI owns the grant's renewal;
+QuotaHop never rotates that grant again. The panel follows a newer current CLI
+access token using read-only file reads and a verified account/organisation
+profile. Switching away does not restore QuotaHop's renewal ownership.
+
 The panel uses the same provider clients as the report, including the **Muse
 CLI bootstrap POST** when that source is configured. Repeated checks therefore
 repeat that documented limitation; the plugin does not add any endpoints.
