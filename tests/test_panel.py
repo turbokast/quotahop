@@ -61,7 +61,7 @@ class RenderTests(unittest.TestCase):
         data['accounts'][-1]['usage']['five_hour']['utilization'] = 101
         data['accounts'][-2]['usage']['five_hour'] = {'utilization': None, 'resets_at': None}
         text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW, details=True))
-        for term in ('SIGN IN', 'SETUP', '◷', '101%', '—'):
+        for term in ('AUTH ERROR', 'SETUP', '◷', '101%', '—'):
             self.assertIn(term, text)
         self.assertNotIn('0%', text)
 
@@ -130,7 +130,39 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(panel.remaining(row, 'five_hour'), '<1%')
         row.update(live=False, status='error')
         text = '\n'.join(s for s, _ in panel.lines(data, 43, NOW))
-        self.assertIn('Active  Unavailable', text)
+        self.assertIn('Active  ERROR', text)
+
+    def test_failures_are_never_reported_as_exhausted_and_best_survives_unknown_selection(self):
+        data = fixture()
+        for row in data['accounts']:
+            row['selected'] = None
+        text = '\n'.join(s for s, _ in panel.lines(data, 32, NOW))
+        self.assertIn('Best?', text)
+        self.assertIn('58%', text)
+        data['accounts'][0]['selected'] = True
+        for row in data['accounts'][1:7]:
+            row.update(status='error', live=False, error_code='rate_limited', usage=None)
+        text = '\n'.join(s for s, _ in panel.lines(data, 60, NOW))
+        self.assertIn('Throttled · quota unknown', text)
+        self.assertNotIn('At quota limit', text)
+        self.assertEqual(panel.cooldown(data), 300)
+        for row in data['accounts'][1:7]:
+            row['error_code'] = 'network_error'
+        self.assertIn('Check failed', '\n'.join(s for s, _ in panel.lines(data, 60, NOW)))
+
+    def test_only_confirmed_exhaustion_says_at_limit(self):
+        data = fixture()
+        for row in data['accounts'][1:7]:
+            row['usage']['five_hour']['utilization'] = 100
+        self.assertIn('At quota limit', '\n'.join(s for s, _ in panel.lines(data, 43, NOW)))
+
+    def test_recent_readings_refresh_at_expiry_without_tight_polling(self):
+        data = fixture()
+        data['accounts'][0].update(status='recent', live=False, captured_at=(NOW - dt.timedelta(seconds=45)).isoformat())
+        self.assertEqual(panel.refresh_delay(data, 60, NOW), 15)
+        self.assertEqual(panel.refresh_delay(data, 60, NOW + dt.timedelta(seconds=14)), 5)
+        data['accounts'][1].update(status='error', live=False, error_code='rate_limited', retry_after_seconds=900)
+        self.assertEqual(panel.refresh_delay(data, 60, NOW), 900)
 
     def test_summary_stays_within_narrow_width(self):
         for width in (0, 1, 12, 26, 43):

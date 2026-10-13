@@ -497,15 +497,18 @@ def report(accounts, store, now, entries=None):
                        quota_scope="selected_meta_portal_team", cli_account_verified=False)
         try:
             if account["id"] in entries:
-                raw = live_usage.fetch(entries[account["id"]], seen, provider)
+                cached, checked = False, None
+                if provider == "claude":
+                    import quota_cache
+                    parsed, checked, cached = quota_cache.fetch(store, account["id"], entries[account["id"]], seen)
+                else:
+                    raw = live_usage.fetch(entries[account["id"]], seen, provider)
                 if owned_muse:
                     import muse_cli_usage
                     parsed, reported_plan = muse_cli_usage.parse(raw)
-                else:
+                elif provider != "claude":
                     parsed = (parse_muse_portal(raw) if provider == "muse_code" else
                           parse_codex(raw) if provider == "codex" else parse_usage(raw))
-                if provider == "claude" and not any(key in raw for key in ("five_hour", "seven_day", "extra_usage")):
-                    raise UsageError("Usage endpoint response does not contain recognized subscription metrics.")
                 if provider == "codex" and raw.get("plan_type") is not None:
                     row.update(reported_plan=clean_text(raw["plan_type"]), plan_verified=True)
                 if provider == "muse_code":
@@ -517,10 +520,12 @@ def report(accounts, store, now, entries=None):
                     if raw.get("identity"):
                         row.update(identity=raw["identity"], name=account_identity.label(raw["identity"]))
                     row["plan_verified"] = row["reported_plan"] is not None
-                row.update(status="live", live=True,
+                row.update(status="recent" if cached else "live", live=not cached,
                            message=(muse_cli_usage.NOTICE if owned_muse else muse_usage.NOTICE if provider == "muse_code" else
                                     live_usage.CODEX_NOTICE if provider == "codex" else live_usage.NOTICE),
-                           captured_at=dt.datetime.now(UTC).isoformat(), usage=parsed)
+                           captured_at=checked or dt.datetime.now(UTC).isoformat(), usage=parsed)
+                if cached:
+                    row["message"] = "Recent successful usage check reused for up to 60 seconds to avoid endpoint throttling. No new request made."
             else:
                 snapshot = validate_snapshot(store.read(account["id"] + ".json"))
                 row.update(status="snapshot", message="Manual snapshot; not a live check.",
@@ -529,9 +534,11 @@ def report(accounts, store, now, entries=None):
         except FileNotFoundError:
             pass
         except UsageError as exc:
-            row.update(status="error", message=str(exc))
+            row.update(status="error", error_code="invalid_data", message=str(exc))
         except live_usage.LiveError as exc:
             row.update(status="error", error_code=exc.code, message=str(exc))
+            if exc.retry_after is not None:
+                row["retry_after_seconds"] = math.ceil(exc.retry_after)
         except OSError:
             row.update(status="error", message="Unable to read private snapshot.")
         results.append(row)
@@ -582,6 +589,24 @@ def concurrent_report(accounts, store, now, entries, jobs=4):
             "live_accounts": sum(row["live"] for row in rows)}
 
 
+def current_usage(row, now):
+    """Only direct readings and explicitly identified, short-lived cache hits."""
+    if row.get("live") and row["status"] == "live":
+        return True
+    if row.get("status") == "recent" and row.get("captured_at"):
+        import quota_cache
+        return 0 <= (now - timestamp(row["captured_at"])).total_seconds() < quota_cache.TTL
+    return False
+
+
+def error_label(row):
+    return {"rate_limited": "THROTTLED", "authentication_error": "AUTH ERROR",
+            "timeout": "TIMEOUT", "network_error": "NETWORK", "tls_error": "TLS ERROR",
+            "http_error": "HTTP ERROR", "invalid_data": "BAD DATA",
+            "worker_failed": "CHECK FAILED", "check_in_progress": "CHECKING",
+            "cache_error": "CACHE ERROR"}.get(row.get("error_code"), "ERROR")
+
+
 def recommendation(row, now):
     """Heuristic priority from observed main windows, never inferred quota resets.
 
@@ -590,7 +615,7 @@ def recommendation(row, now):
     reset is seconds away. Missing windows are ignored (e.g. weekly-only Codex).
     """
     name = row["name"].casefold()
-    if not row.get("live") or row["status"] != "live":
+    if not current_usage(row, now):
         return (3, 0, 0, name)
     usage = row.get("usage") or {}
     windows = [usage[key] for key in ("five_hour", "seven_day")
@@ -689,7 +714,7 @@ def render(data, now, *, verbose=False, color=False, width=None):
     def usage_color(value):
         return "90" if value is None else "31" if value >= 80 else "33" if value >= 50 else "32"
 
-    status_styles = {"live": ("●", "32"), "error": ("✕", "31"),
+    status_styles = {"live": ("●", "32"), "recent": ("◷", "36"), "error": ("✕", "31"),
                      "snapshot": ("◷", "36"), "not_configured": ("○", "90"),
                      "unsupported": ("!", "33")}
     rows = [["Account", "Plan*" if verbose else "Plan", "5h Used", "↻ 5h Reset (local)", "7d Used",
@@ -709,7 +734,7 @@ def render(data, now, *, verbose=False, color=False, width=None):
         icon, status_color = status_styles[row["status"]]
         rows.append([row["name"], label, percent(five["utilization"]),
                      reset_text(five["resets_at"], now), percent(seven["utilization"]),
-                     reset_text(seven["resets_at"], now), icon + " " + row["status"].upper()])
+                     reset_text(seven["resets_at"], now), icon + " " + (error_label(row) if row["status"] == "error" else row["status"].upper())])
         styles.append(["1", "90", usage_color(five["utilization"]), "90",
                        usage_color(seven["utilization"]), "90", status_color])
         if show_selection:
@@ -743,8 +768,8 @@ def render(data, now, *, verbose=False, color=False, width=None):
             marker = ('▶ ' if account.get('selected') is True else '○ ' if account.get('selected') is False else '? ') if show_selection else ''
             state = cells[6]
             readiness = account.get('switch_readiness')
-            if show_selection and account['status'] == 'live' and readiness == 'ready':
-                state = '● LIVE ✓'
+            if show_selection and account['status'] in ('live', 'recent') and readiness == 'ready':
+                state += ' ✓'
             elif show_selection and account['status'] == 'error' and readiness in ('expired', 'expiring'):
                 state = '✕ ' + readiness.capitalize()
             if account['status'] == 'not_configured':
@@ -812,6 +837,11 @@ def render(data, now, *, verbose=False, color=False, width=None):
     if not data["accounts"]:
         lines.extend(wrap_cells('No accounts configured.', width) if stacked else
                      [border("╭", "┬", "╮"), table_row(rows[0], ["1"] * len(widths)), border("╰", "┴", "╯")])
+    if any(a["status"] == "recent" for a in data["accounts"]):
+        lines.extend(wrap_cells('◷ RECENT: successful check reused for up to 60s; no new request.', width))
+    if any(a.get("error_code") == "rate_limited" for a in data["accounts"]):
+        delay = max(a.get("retry_after_seconds", 300) for a in data["accounts"] if a.get("error_code") == "rate_limited")
+        lines.extend(wrap_cells('THROTTLED: usage endpoint HTTP 429; quota unknown, not exhausted. Retry in ' + duration(delay) + '.', width))
     if show_selection:
         lines += [''] + [paint(part, '1;36') for part in wrap_cells(
             '▶ Selected CLI login  ·  ○ Standby  ·  ? Unverified' + ('  ·  ↻ Until reset' if compact else ''), width)]

@@ -134,6 +134,28 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(len({c.args[2] for c in usage.call_args_list}), 7)
         self.assert_unrelated_unchanged()
 
+    def test_report_then_switch_reuses_successful_checks_without_a_request_burst(self):
+        with patch.object(live.UsageClient, "request", side_effect=self.usage) as usage:
+            data = app.report(self.accounts, self.store, dt.datetime.now(app.UTC), self.entries)
+            self.assertEqual(data['live_accounts'], 2)
+            code, result = self.cli('--switch-next', '--jobs', '1')
+        self.assertEqual(code, 0, result)
+        self.assertEqual(usage.call_count, 2)
+        self.assertTrue(result['changed'])
+        self.assert_unrelated_unchanged()
+
+    def test_throttling_is_explained_and_repeat_switch_attempts_make_no_requests(self):
+        with patch.object(live.UsageClient, 'request', side_effect=live.LiveError('rate_limited', 'HTTP 429', retry_after=300)) as usage:
+            for _ in range(2):
+                code, result = self.cli('--switch-next', '--jobs', '1')
+                self.assertEqual(code, 2)
+                self.assertIn('2 throttled', result['error'])
+                self.assertIn('Failed checks do not mean quota is exhausted', result['error'])
+                self.assertNotIn('at quota limit', result['error'])
+            self.assertEqual(usage.call_count, 2)
+        self.network.assert_not_called()
+        self.assert_original()
+
     def test_automatic_plan_filter_disambiguates_same_email(self):
         self.network.return_value = profile("claude_team")
         with patch.object(live.UsageClient, "request", side_effect=self.usage) as usage:
@@ -173,6 +195,8 @@ class SwitchTests(unittest.TestCase):
     def test_automatic_all_exhausted_unknown_or_errors_never_switch_or_retry(self):
         for raw in ({"five_hour": {"utilization": 100}}, {"seven_day": {"utilization": 100}}, {},
                     live.LiveError("timeout", "Check timed out."), live.LiveError("authentication_error", "Rejected.")):
+            import shutil
+            shutil.rmtree(self.root / 'tool' / 'quota-cache', ignore_errors=True)
             with patch.object(live.UsageClient, "request") as usage:
                 if isinstance(raw, Exception):
                     usage.side_effect = raw

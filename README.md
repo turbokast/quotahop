@@ -91,13 +91,22 @@ The original `./claude-usage` launcher remains supported and shares the vault.
 | Indicator | Meaning |
 |---|---|
 | `● LIVE` | Usage was fetched successfully. |
+| `◷ RECENT` | A successful Claude check, less than 60 seconds old, was reused. |
 | `● LIVE ✓` / `✓ Ready` | Also a Claude switching candidate: token valid for over a minute, required scope if known, and quota headroom. |
 | `▶` | Matches the selected CLI credentials; already-running sessions may use another login. |
 | `—` | The provider did not supply this metric. |
-| Error / Sign in | Check `--verbose` for the reason or setup needed. |
+| `THROTTLED` | The usage endpoint returned HTTP 429. Subscription quota is unknown; wait for the displayed cooldown. |
+| Auth error / Timeout / Network | The check failed; this does not mean the subscription is exhausted. See `--verbose`. |
 
 **Ready does not mean automatic renewal is enabled.** Use `--background status`
 for renewal state. A switch verifies the target’s identity before installing it.
+
+Claude reports, panels and switches share a private 60-second usage cache, so
+running a report followed by `--switch-next` does not immediately query all seven
+accounts again. Cache hits keep the original check time, expire at reset boundaries,
+and never survive a credential change. HTTP 429 starts a shared cooldown of at
+least five minutes (longer when requested by the server). No retries or token
+refreshes are triggered. Failed checks never become zero usage or exhausted quota.
 
 The default ranking uses `remaining percentage / (1 + hours until earliest reset)`.
 Remaining percentage is the smaller known five-hour/weekly headroom. Exhausted
@@ -122,6 +131,9 @@ provider, Enter to preview its Next account, and Enter again to confirm a Claude
 switch (Esc cancels). Codex/Muse switching is unavailable. It keeps the vault
 key in memory until locked/closed; `quotahop --lock` locks open panels too.
 No credentials are copied into Herdr. Ordinary reports remain one-shot.
+If the active login cannot be verified, **Best?** shows the best saved candidate's
+remaining quota without claiming it is a different login; switching stays blocked.
+`~` marks a recent cached check. The panel pauses requests during endpoint cooldowns.
 It is a tab-local split; Herdr does not yet provide a global pinned plugin widget.
 
 You can also run `./quotahop --panel` in any interactive terminal.

@@ -45,7 +45,7 @@ def current(accounts, entries=None):
 
 def annotate(data, entries, before, after, now):
     """Exact credential matching, never email guessing or per-process claims."""
-    from claude_usage import recommendation
+    from claude_usage import recommendation, current_usage
     rows = []
     for original in data["accounts"]:
         row = dict(original)
@@ -74,7 +74,7 @@ def annotate(data, entries, before, after, now):
             state = "expiring"
         elif "scopes" in entry and "user:inference" not in entry["scopes"]:
             state = "scope_missing"
-        elif not row.get("live") or row["status"] != "live":
+        elif not current_usage(row, now):
             state = "unverified"
         elif recommendation(row, now)[0] == 2:
             state = "exhausted"

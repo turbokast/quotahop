@@ -223,11 +223,11 @@ def remaining(row, key):
     return "<1%" if 0 < left < 1 else f"{left:.0f}%"
 
 
-def next_account(rows, active, now):
+def next_account(rows, active, now, *, preview=False):
     """Same ranking as the CLI, restricted to verified usable alternatives."""
     candidates = []
     for row in rows:
-        if row["id"] == active["id"] or row.get("selected") is not False:
+        if not preview and (row["id"] == active["id"] or row.get("selected") is not False):
             continue
         if app.recommendation(row, now)[0] not in (0, 1):
             continue
@@ -238,6 +238,30 @@ def next_account(rows, active, now):
             continue
         candidates.append(row)
     return min(candidates, key=lambda row: app.recommendation(row, now), default=None)
+
+
+def unavailable_reason(rows, now):
+    if not rows:
+        return "No other sub"
+    if any(r.get("error_code") == "rate_limited" for r in rows):
+        return "Throttled · quota unknown"
+    if any(r.get("status") == "error" for r in rows):
+        return "Check failed · quota unknown"
+    if all(app.recommendation(r, now)[0] == 2 for r in rows):
+        return "At quota limit"
+    return "Usage/auth unverified"
+
+
+def cooldown(data):
+    return max((r.get("retry_after_seconds", 300) for r in data.get("accounts", [])
+                if r.get("error_code") == "rate_limited"), default=0)
+
+
+def refresh_delay(data, interval, now):
+    import quota_cache
+    remaining = [quota_cache.TTL - (now - app.timestamp(r['captured_at'])).total_seconds()
+                 for r in data.get('accounts', []) if r.get('status') == 'recent']
+    return max(cooldown(data), min([interval] + [max(5, s) for s in remaining]))
 
 
 def summary_lines(data, width, now, selected_provider=None):
@@ -255,20 +279,24 @@ def summary_lines(data, width, now, selected_provider=None):
         upcoming = next_account(rows, active, now) if active else None
         # One saved subscription can still show useful quota without falsely
         # claiming that its credentials match the current CLI login.
-        saved = rows[0] if active is None and len(rows) == 1 else None
-        slots = [("Active", active), ("Saved?" if saved else "Next", saved or upcoming)]
+        saved = (rows[0] if len(rows) == 1 else next_account(rows, None, now, preview=True)) if active is None else None
+        slots = [("Active", active), ("Saved?" if saved and len(rows) == 1 else "Best?" if saved else "Next", saved or upcoming)]
         for label, row in slots:
-            if row is not None and row.get("live") and row.get("status") == "live":
+            if row is not None and app.current_usage(row, now):
                 values = [remaining(row, key) for key in ("five_hour", "seven_day")]
                 usage = row.get("usage") or {}
                 known = [w["utilization"] for w in (usage.get("five_hour"), usage.get("seven_day"))
                          if isinstance(w, dict) and w.get("utilization") is not None]
                 style = "high" if known and max(known) >= 90 else "warn" if known and max(known) >= 70 else "selected" if label == "Active" else "normal"
-                result.append((f"  {label:<8}{values[0]:>6}{values[1]:>8}", style))
+                shown = label + ("~" if row["status"] == "recent" else "")
+                result.append((f"  {shown:<8}{values[0]:>6}{values[1]:>8}", style))
             else:
-                text = ("Unavailable" if row else "Unverified" if active is None else
-                        "No other sub" if len(rows) == 1 else "None available")
+                text = (app.error_label(row) if row and row["status"] == "error" else
+                        "Usage unknown" if row else "Unverified" if label == "Active" else
+                        unavailable_reason([r for r in rows if active is None or r['id'] != active['id']], now))
                 result.append((f"  {label:<8}{text}", "muted"))
+    if any(r.get('status') == 'recent' for r in data['accounts']):
+        result.append(("~ recent check · at most 60s", "muted"))
     return [(clip(text, max(0, width)), style) for text, style in result]
 
 
@@ -297,12 +325,12 @@ def detail_lines(data, width, now, *, details=False):
             used = [v for v in used if v is not None]
             style = "selected" if row.get("selected") is True else "high" if used and max(used) >= 90 else "warn" if used and max(used) >= 70 else "normal"
             status = row.get("status")
-            if status not in ("live", "snapshot"):
-                label = "SIGN IN" if row.get("error_code") == "authentication_error" else "ERROR" if status == "error" else "SETUP" if status == "not_configured" else "UNSUPPORTED"
+            if status not in ("live", "recent", "snapshot"):
+                label = app.error_label(row) if status == "error" else "SETUP" if status == "not_configured" else "UNSUPPORTED"
                 result.append((f"{name} · {plan}", "high"))
                 result.append(("  " + label, "high"))
             else:
-                prefix = "◷ " if status == "snapshot" else ""
+                prefix = "◷ " if status in ("snapshot", "recent") else ""
                 # Two short lines keep full subscription labels and more of the
                 # email visible. At 44 columns nine accounts fit in ~30 rows.
                 suffix = " · " + plan + (" ✓" if row.get("switch_readiness") == "ready" else "")
@@ -364,7 +392,7 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
         except curses.error:
             pass
     data, fetch = None, None
-    due, last_start, checked = 0, -100, 0
+    due, last_start, checked, retry_at = 0, -100, 0, 0
     paused, details, scroll = False, False, 0
     selected_provider, confirmation, confirmed_after = "claude", None, 0
     notice, notice_until = "", 0
@@ -398,7 +426,9 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                         message = result["error"]
                     else:
                         data, message = result, ""
-            if not paused and confirmation is None and fetch is None and now >= due:
+                        retry_at = now + cooldown(data)
+                        due = now + refresh_delay(data, interval, dt.datetime.now(app.UTC))
+            if not paused and confirmation is None and fetch is None and now >= max(due, retry_at):
                 try:
                     accounts, entries = source.load()
                     fetch = Fetch(lambda: collect(source.path, accounts, entries, jobs, sort, reverse))
@@ -438,6 +468,8 @@ def _screen(screen, source, interval, jobs, sort, reverse, color):
                 status = "Stale · checked " + app.duration(age) + " ago"
             if notice and now < notice_until and not source.locked:
                 status = notice
+            elif now < retry_at and not source.locked:
+                status = f"Throttled · retry {app.duration(retry_at - now)}"
             content = [(title, "group"), (status, "warn" if message or paused else "muted")]
             content += body[scroll:scroll + visible]
             for y, (text, style) in enumerate(content[:max(0, height - footer_count)]):

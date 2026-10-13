@@ -133,7 +133,7 @@ class ParallelReportTests(unittest.TestCase):
             self.assertEqual(len(calls), 8)
             self.assertNotIn("FAKE-ACCESS", json.dumps(result))
             self.assertEqual(source.stat(), before)
-            self.assertEqual(list((Path(tmp) / "data").iterdir()), [])
+            self.assertEqual([p.name for p in (Path(tmp) / "data").iterdir()], ['quota-cache'])
 
     def test_worker_failure_remains_visible_without_retry(self):
         accounts = app.default_accounts()[:2]

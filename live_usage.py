@@ -1,5 +1,7 @@
 """One GET per saved access token. No OAuth client, login, refresh, or SDK."""
 import base64
+import datetime as dt
+from email.utils import parsedate_to_datetime
 from contextlib import contextmanager
 import getpass
 import hashlib
@@ -35,9 +37,22 @@ MUSE_NOTICE = "Muse Code uses a separately captured Meta portal session and sele
 
 
 class LiveError(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, *, retry_after=None):
         super().__init__(message)
         self.code = code
+        self.retry_after = retry_after
+
+
+def retry_delay(value):
+    """Only a bounded numeric delay crosses the network boundary, never header text."""
+    try:
+        if not isinstance(value, str) or len(value) > 128:
+            return 300
+        seconds = int(value) if value.isdecimal() else (
+            parsedate_to_datetime(value) - dt.datetime.now(dt.timezone.utc)).total_seconds()
+        return max(300, min(86400, math.ceil(seconds)))
+    except (ValueError, TypeError, OverflowError):
+        return 300
 
 
 def json_object(raw):
@@ -429,7 +444,8 @@ class UsageClient:
                 if status in (401, 403):
                     raise LiveError("authentication_error", "Access token expired, revoked, or not authorized. No refresh attempted; capture again after your normal login.")
                 if status == 429:
-                    raise LiveError("rate_limited", "Usage endpoint rate limited this request. No retries; try later.")
+                    delay = retry_delay(response.getheader("Retry-After"))
+                    raise LiveError("rate_limited", "Usage endpoint rate limited this request (HTTP 429). Subscription quota is unknown, not exhausted. Try again after the cooldown.", retry_after=delay)
                 if 300 <= status < 400:
                     raise LiveError("redirect_blocked", "Usage endpoint redirected; redirect blocked to protect credentials.")
                 if status != 200:

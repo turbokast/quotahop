@@ -176,7 +176,7 @@ class CommandTests(unittest.TestCase):
                 {"id": "muse-1", "name": "My Muse", "plan": "muse_code", "source": "cli_current"}]
             with app.Store(directory, create=True) as store:
                 store.write("accounts.json", {"accounts": accounts})
-            entries = {a["id"]: {"fake": True} for a in accounts if a["plan"] != "muse_code"}
+            entries = {a["id"]: {"access_token": "FAKE-" + a["id"], "expires_at": None} for a in accounts if a["plan"] != "muse_code"}
             def fetch(entry, seen, provider):
                 return {"rate_limit": {}} if provider == "codex" else {"five_hour": {"utilization": 42}}
             muse_response = {k: v for k, v in payload().items() if k.startswith("subs_")}

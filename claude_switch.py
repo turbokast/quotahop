@@ -292,7 +292,15 @@ def recommended_account(store, accounts, entries, plan=None, jobs=4):
         except live.LiveError:
             continue
         return row["id"]
-    fail("No switchable Claude subscription has live available usage and a token valid for more than one minute. Check --verbose, or recapture expired accounts. No Claude authentication changed.")
+    from collections import Counter
+    from claude_usage import error_label
+    counts = Counter()
+    counts['auth not ready'] = sum(a['plan'] in ('max_20x', 'team_premium') and (not plan or a['plan'] == plan) for a in accounts) - len(candidates)
+    for row in data['accounts']:
+        counts[error_label(row).lower() if row['status'] == 'error' else
+               'at quota limit' if recommendation(row, now)[0] == 2 else 'usage or auth unverified'] += 1
+    detail = ', '.join(f'{n} {label}' for label, n in counts.items() if n) or 'no configured Claude subscriptions'
+    fail(f"Cannot verify a switchable Claude subscription: {detail}. Failed checks do not mean quota is exhausted. Check --verbose for details. No Claude authentication changed.")
 
 
 def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=False, automatic=False, jobs=4,

@@ -193,7 +193,7 @@ class StorageAndCLITests(unittest.TestCase):
             self.assertIn(detail, detailed)
 
     def test_account_error_explanation_requires_verbose(self):
-        with patch.object(app.live_usage, "load_vault", return_value={"max-1": {"provider": "claude"}}), patch.object(
+        with patch.object(app.live_usage, "load_vault", return_value={"max-1": {"provider": "claude", "access_token": "FAKE-ERROR-TEST", "expires_at": None}}), patch.object(
                 app.live_usage, "fetch", side_effect=app.live_usage.LiveError("authentication_error", "Saved token expired.")) as fetch:
             for flags in ((), ("--verbose",)):
                 code, out, err = self.run_cli(*flags)

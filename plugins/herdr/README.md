@@ -71,7 +71,7 @@ source to update it. Neither operation deletes the QuotaHop vault.
 | Enter | Preview the selected provider's Next subscription; Enter again confirms. Claude only. |
 | Escape | Cancel a confirmation; otherwise close the panel. |
 | `u` | Unlock the panel using the existing vault/cache. |
-| `r` | Fetch now; requests never overlap and manual checks have a five-second cooldown. |
+| `r` | Check now; recent Claude results can be reused, and HTTP 429 cooldowns cannot be bypassed. |
 | `p` | Pause/resume quota checks; cancel any active batch. |
 | `d` | Toggle the full account list, used percentages, plans, resets and errors. |
 | Page Up / Page Down | Scroll when accounts or details exceed the pane height. |
@@ -172,8 +172,11 @@ normal cache and independent renewal worker alone.
 The panel uses the same provider clients as the report, including the **Muse
 CLI bootstrap POST** when that source is configured. Repeated checks therefore
 repeat that documented limitation; the plugin does not add any endpoints.
-Quota checks never write provider authentication. Report data stays in memory and is
-not cached on disk or sent to Herdr's marketplace.
+Quota checks never write provider authentication. Full reports stay in memory and
+are never sent to Herdr's marketplace. Parsed Claude metrics are cached privately in
+QuotaHop's data directory for up to 60 seconds, shared with reports and switching.
+Reused readings are marked `~` and retain their original check time. HTTP 429
+causes a shared cooldown, never a claim that subscription quota is exhausted.
 
 ## Publishing
 

@@ -84,3 +84,12 @@ class ConfirmationTests(unittest.TestCase):
         prepare, execute = self.drive([-1, panel.curses.KEY_DOWN, 10, 27, ord('q')], [10, 11, 12, 13, 14])
         self.assertEqual(prepare.call_args.args[2], 'muse_code')
         execute.assert_not_called()
+
+    def test_manual_refresh_cannot_bypass_server_cooldown(self):
+        self.data['accounts'][0].update(status='error', live=False, usage=None,
+                                        error_code='rate_limited', retry_after_seconds=300)
+        with patch.object(panel.curses, 'curs_set'), patch.object(panel, 'Fetch') as fetch, \
+             patch.object(panel.time, 'monotonic', side_effect=[10, 11, 20, 21]):
+            fetch.return_value.poll.return_value = self.data
+            panel._screen(self.screen([-1, -1, ord('r'), ord('q')]), self.source, 60, 4, 'recommended', False, False)
+        fetch.assert_called_once()

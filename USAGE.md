@@ -11,6 +11,12 @@ interruption recovery, and forgotten-password limitations.
 In the compact report, `● LIVE` means usage was fetched successfully;
 `● LIVE ✓` additionally marks a Claude switching candidate. The checkmark is
 not a background-renewal indicator; use `--background status` for that.
+`◷ RECENT` identifies a successful Claude check reused for up to 60 seconds.
+Reports, switches and panels share this cache; original check times are preserved.
+`THROTTLED` means HTTP 429 from the usage endpoint, not exhausted subscription
+quota. A shared cooldown honors Retry-After, with a five-minute minimum and a
+one-day maximum. Authentication, timeout, network and malformed-response errors
+also have distinct labels; `--verbose` includes the explanation.
 
 For an explicitly opened, refreshing side panel, use `quotahop --panel` or the
 [Herdr plugin](plugins/herdr/README.md). It refreshes every 60 seconds only while
@@ -22,7 +28,7 @@ confirms a Claude switch. Esc cancels. Codex/Muse switching is unavailable.
 For the CLI, `--switch-next --provider claude` explicitly selects the provider.
 
 Checks **Claude, Codex, and Muse Code subscription quotas**, then exits.
-Claude/Codex use one GET each. Muse portal sources use one identity GET and one subscription
+Claude/Codex use at most one GET each (Claude can reuse a recent check). Muse portal sources use one identity GET and one subscription
 quota GET for the portal team you select. Ordinary reports perform no inference, login,
 logout, OAuth renewal, or polling. Explicit independent Claude/Codex enrollment and
 background renewal are available below. Muse supports independent enrollment and expiry
@@ -646,8 +652,9 @@ Sorting also orders the JSON accounts array within provider groups. Each command
 still fetches usage once and exits; sorting adds no network requests.
 
 Independent account checks run concurrently using up to four short-lived Linux
-worker processes. This overlaps network waits without adding requests or using
-cached usage data. Use `--jobs 1` for sequential checks, or `--jobs 2` through
+worker processes. This overlaps network waits without adding requests. Claude
+checks share a private 60-second cache and per-account request locks; a cache hit
+never crosses a reset boundary or credential change. Use `--jobs 1` for sequential checks, or `--jobs 2` through
 `--jobs 8` to choose the concurrency limit. Duplicate credentials stay in the
 same worker so they cannot trigger duplicate usage requests. Unconfigured rows
 and snapshots are handled locally without workers.
@@ -679,7 +686,10 @@ live email is not saved. You can remove all entries and add/capture new ones lat
 JSON includes each account's `status`, `live`, nullable `usage`, `captured_at`, and
 safe errors. Top-level `live` is true only when all accounts returned live data;
 `live_accounts` counts successful live accounts. Errors never silently fall back
-to a saved snapshot. JSON stdout contains no prompts; the passphrase prompt uses
+to a saved snapshot or an old cached reading. Cache hits use `status: "recent"`,
+`live: false`, and the original `captured_at`; they remain switching candidates
+only while less than 60 seconds old. HTTP 429 errors include `retry_after_seconds`.
+JSON stdout contains no prompts; the passphrase prompt uses
 the terminal. A valid cached unlock also works without a terminal. Once it
 expires, a terminal is required again; there is no echoed password-input fallback.
 

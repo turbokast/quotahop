@@ -8,7 +8,7 @@ import live_usage as live
 
 
 def prepare(source, data, provider, now):
-    from usage_panel import next_account
+    from usage_panel import next_account, unavailable_reason
     if provider != "claude":
         raise live.LiveError("switch_unavailable", "Claude switching only")
     if not data or not 0 <= (now - app.timestamp(data["generated_at"])).total_seconds() <= 120:
@@ -21,7 +21,7 @@ def prepare(source, data, provider, now):
         raise live.LiveError("unknown_selection", "Current login unverified")
     target = next_account(rows, selected[0], now)
     if target is None:
-        raise live.LiveError("no_candidate", "No available alternative")
+        raise live.LiveError("no_candidate", unavailable_reason([r for r in rows if r['id'] != selected[0]['id']], now))
     accounts, entries = source.load()
     current = credential_state.current([a for a in accounts if app.PROVIDERS[a["plan"]] == provider], entries).get(provider)
     expected = credential_state.fingerprint(entries.get(selected[0]["id"], {}), provider)
