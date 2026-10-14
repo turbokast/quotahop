@@ -64,6 +64,11 @@ class SelectionTests(unittest.TestCase):
         self.assertIsNone(result["accounts"][2]["selected"])
         self.assertIsNone(result["accounts"][3]["selected"])
 
+    def test_independently_enrolled_codex_grant_matches_cli_by_account(self):
+        cli = {**self.entries["codex"], "access_token": "FAKE-CLI-OWN-TOKEN"}
+        self.current["codex"] = state.fingerprint(cli, "codex")
+        self.assertTrue(self.annotate()["accounts"][2]["selected"])
+
     def test_readiness_distinguishes_expiry_scope_limits_and_unavailable_usage(self):
         for fields, expected in (({"expires_at": NOW.timestamp() - 1}, "expired"),
                                  ({"expires_at": NOW.timestamp() + 60}, "expiring"),

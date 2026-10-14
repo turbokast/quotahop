@@ -20,6 +20,7 @@ import sys
 import time
 
 import account_identity
+import isolated_auth
 import live_usage as live
 import owned_codex
 import owned_claude
@@ -30,6 +31,9 @@ REGISTRY = 'renewal.json'
 STATUS = 'renewal-status.json'
 STOP = 'renewal-stop.json'
 LOCK = 'renewal-lock.json'
+BLOCKED_RETRY = 600
+BLOCKED = {'unsupported_cli': 'Claude Code updated to a build QuotaHop has not verified, and no verified build remains installed; renewal paused, grant intact.',
+           'dependency_missing': 'Renewal tool missing (CLI or bubblewrap); renewal paused, grant intact.'}
 RESERVED = {'renewal', 'renewal-status', 'renewal-stop', 'renewal-lock'}
 BACKENDS = {'codex': owned_codex, 'claude': owned_claude, 'muse_code': owned_muse}
 ORIGINS = {'codex': 'isolated-codex-device-v1', 'claude': owned_claude.ORIGIN, 'muse_code': owned_muse.ORIGIN}
@@ -69,7 +73,7 @@ def records(store, key):
         for ident, item in value.items():
             if (not isinstance(item, dict) or item.get('origin') not in ORIGINS.values()
                     or item.get('state') not in ('ready', 'in_flight', 'suspended', 'reauth_required', 'cli_owned', 'legacy_hold')
-                    or set(item) - {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at', 'ownership'}
+                    or set(item) - {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at', 'ownership', 'blocked'}
                     or not {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at'} <= set(item)):
                 raise ValueError()
             provider = next(p for p, origin in ORIGINS.items() if origin == item['origin'])
@@ -87,6 +91,8 @@ def records(store, key):
             elif not BACKENDS[provider].matches(item['auth'], item['entry']):
                 raise ValueError()
             if 'ownership' in item and item['ownership'] not in ('private', 'cli'):
+                raise ValueError()
+            if 'blocked' in item and item['blocked'] not in BLOCKED:
                 raise ValueError()
             if provider == 'claude':
                 if item.get('ownership') == 'cli':
@@ -327,13 +333,16 @@ def public_status(accounts, saved, *, active=False):
         item = saved.get(account['id'])
         provider = provider_for(account)
         state = item['state'] if item else 'needs_enrollment'
+        if state == 'ready' and item.get('blocked'):
+            state = 'blocked'
         mode = 'expiry_tracking' if provider == 'muse_code' else 'automatic_renewal'
         if state in ('cli_owned', 'legacy_hold'):
             mode = 'cli_renewal' if state == 'cli_owned' else 'renewal_hold'
         rows.append({'id': account['id'], 'name': account['name'], 'provider': provider, 'state': state, 'mode': mode,
-                     'next_at': item['next_at'] if item and state == 'ready' else None,
+                     'next_at': item['next_at'] if item and state in ('ready', 'blocked') else None,
                      'expires_at': item['entry']['expires_at'] if item else None,
-                     'message': ('Claude Code owns this grant; QuotaHop will never refresh it. Re-enroll for a new independent standby grant.' if state == 'cli_owned'
+                     'message': (BLOCKED[item['blocked']] if state == 'blocked' else
+                                 'Claude Code owns this grant; QuotaHop will never refresh it. Re-enroll for a new independent standby grant.' if state == 'cli_owned'
                                  else 'Legacy Claude grant may be in use by a session. Automatic renewal blocked; explicitly switch to hand it to Claude Code, or re-enroll.' if state == 'legacy_hold'
                                  else 'Renewal outcome uncertain: re-enroll; automatic retries disabled.' if state in ('in_flight', 'suspended')
                                  else LIMITATIONS[provider] if provider == 'muse_code' else 'Independent grant; renews five minutes before expiry.' if item else LIMITATIONS[provider])})
@@ -419,6 +428,12 @@ def cycle(store, key, now=None):
                     fresh, entry = perform(valid[ident], item['auth'])
                     require_same(item['entry'], entry)
                     item.update(auth=fresh, entry=entry, state='ready', next_at=entry['expires_at'] - 300, updated_at=time.time())
+                    item.pop('blocked', None)
+                except isolated_auth.PreflightError as exc:
+                    # Refused before any process or request: the refresh token
+                    # was never sent, so retrying later cannot replay it.
+                    item.update(state='ready', blocked=exc.code if exc.code in BLOCKED else 'unsupported_cli',
+                                next_at=time.time() + BLOCKED_RETRY)
                 except Exception:
                     # Provider errors can reflect secrets; persist a fixed state only.
                     # A lost successful response may have rotated the token. No replay.
@@ -513,7 +528,7 @@ def worker(data_dir, key_fd, ready_fd):
                     pass
                 try:
                     result = cycle(store, key)
-                    if not any(row['state'] == 'ready' for row in result['accounts']):
+                    if not any(row['state'] in ('ready', 'blocked') for row in result['accounts']):
                         break
                 except live.LiveError as exc:
                     if exc.code != 'vault_busy':
@@ -539,8 +554,8 @@ def render_status(value):
     lines = [value['message']]
     for row in value.get('accounts', []):
         label = row['state'].replace('_', ' ')
-        if row['state'] == 'ready':
-            label += (' · sign-in expires ' if row['provider'] == 'muse_code' else ' · renewal due ') + duration(max(0, row['next_at'] - time.time()))
+        if row['state'] in ('ready', 'blocked'):
+            label += (' · sign-in expires ' if row['provider'] == 'muse_code' else ' · retry in ' if row['state'] == 'blocked' else ' · renewal due ') + duration(max(0, row['next_at'] - time.time()))
         lines.append(f"  {row['name']}: {label}")
     return '\n'.join(lines)
 

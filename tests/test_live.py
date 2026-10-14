@@ -104,7 +104,7 @@ class LiveNetworkTests(unittest.TestCase):
     def test_expired_tokens_never_sent_and_duplicates_blocked(self):
         with self.assertRaises(live.LiveError) as caught:
             live.fetch({"access_token": FAKE_TOKEN, "expires_at": 1}, set())
-        self.assertEqual(caught.exception.code, "authentication_error")
+        self.assertEqual(caught.exception.code, "token_expired")
         self.factory_mock.assert_not_called()
         seen = set()
         entry = {"access_token": FAKE_TOKEN, "expires_at": None}

@@ -222,7 +222,9 @@ revoke the old session. A provider-revoked grant still requires a fresh sign-in.
 
 Claude 2.1.296 and Muse 1.4.6-R6000.1 authentication are pinned to inspected
 Linux executable hashes. Other builds, even with the same version, are refused
-until verified. Read-only capture does not require these binaries. See the
+until verified. After a Claude Code auto-update, renewal keeps using the verified
+build while it remains in Claude's versions directory; if none remains, renewal
+pauses (grants stay intact, shown as `blocked`) instead of suspending. Read-only capture does not require these binaries. See the
 [renewal guide](USAGE.md#optional-background-authentication-renewal).
 
 ## Change the vault password

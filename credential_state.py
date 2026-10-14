@@ -9,7 +9,11 @@ def fingerprint(entry, provider):
     token = entry.get("access_token")
     if not token:
         return None
-    return hashlib.sha256(token.encode()).digest(), entry.get("account_id") if provider == "codex" else None
+    if provider == "codex" and entry.get("account_id"):
+        # Enrolled Codex grants are independent of the CLI's own login, so
+        # their tokens never match; the ChatGPT account ID is the identity.
+        return "codex-account", entry["account_id"]
+    return hashlib.sha256(token.encode()).digest(), None
 
 
 def current(accounts, entries=None):

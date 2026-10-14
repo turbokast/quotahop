@@ -85,7 +85,7 @@ def synchronize(store, accounts, entries, key, salt, *, establish=False):
                 notes.append({"account_id": account["id"], "state": "synchronized",
                               "message": "Copied the CLI's already-renewed access token; source credentials unchanged."})
         except live.LiveError as exc:
-            notes.append({"state": "source_unavailable", "message": str(exc)})
+            notes.append({"state": "source_unavailable", "code": exc.code, "message": str(exc)})
         except (OSError, ValueError, TypeError, AttributeError):
             notes.append({"state": "source_unavailable", "message": "Could not safely verify the current CLI credential; saved copies retained."})
     if updated != entries:
@@ -93,8 +93,10 @@ def synchronize(store, accounts, entries, key, salt, *, establish=False):
     return updated, notes
 
 
-def follow_cli(store, accounts, entries, key):
-    """Follow only grants explicitly handed to Claude; no renewal or CLI writes."""
+def follow_cli(store, accounts, entries, key, notes=None):
+    """Follow only grants explicitly handed to Claude; no renewal or CLI writes.
+
+    Sanitized outcome notes are appended to ``notes`` when a list is given."""
     import auth_renewal
     saved = auth_renewal.records(store, key)
     owned = [a for a in accounts if saved.get(a['id'], {}).get('state') == 'cli_owned']
@@ -103,7 +105,10 @@ def follow_cli(store, accounts, entries, key):
     try:
         with auth_renewal.vault_lock(store):
             current, _, salt = live.unlock_vault(store.read('vault.json'), None, key=key)
-            return synchronize(store, owned, current, key, salt)[0]
+            updated, found = synchronize(store, owned, current, key, salt)
+            if notes is not None:
+                notes.extend(found)
+            return updated
     except live.LiveError as exc:
         if exc.code != 'vault_busy':
             raise

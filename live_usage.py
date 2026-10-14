@@ -484,7 +484,7 @@ def fetch(entry, seen, provider="claude"):
         raise LiveError("duplicate_account", "Duplicate saved token; refusing to label one account as two accounts.")
     seen.add(digest)
     if entry["expires_at"] is not None and entry["expires_at"] <= time.time():
-        raise LiveError("authentication_error", "Saved access token has expired. No refresh attempted; capture again after your normal login.")
+        raise LiveError("token_expired", "Saved access token has expired. No refresh attempted; capture again after your normal login.")
     if provider == "codex":
         result = UsageClient().request("GET", CODEX_URL, token, entry.get("account_id"))
         if result.get("account_id") is not None and result["account_id"] != entry.get("account_id"):

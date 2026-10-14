@@ -138,7 +138,10 @@ CLI credential stores, Design auth, keyrings, and shell configuration are not
 mounted. Only that subprocess receives isolated HOME/CODEX_HOME values; your
 shell and global environment stay unchanged. Claude 2.1.296 and Muse 1.4.6-R6000.1
 are pinned by executable SHA-256 to the builds tested offline; an upgrade fails
-closed until its authentication behavior is verified. Muse updater wrappers are
+closed until its authentication behavior is verified. Claude renewal uses an older
+verified build still installed beside the updated one. Refusals that happen before
+any process starts pause renewal (`blocked`, retried every 10 minutes) rather than
+suspending, because the refresh token was never sent. Muse updater wrappers are
 not executed. If isolation cannot be created,
 the operation fails; there is no unsandboxed fallback.
 

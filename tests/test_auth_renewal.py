@@ -137,6 +137,29 @@ class RenewalTests(unittest.TestCase):
             self.assertNotIn('FAKE-REFRESH', json.dumps(renewal.status(self.store, self.accounts)))
             self.assertEqual(live.load_vault(self.store)['codex-1'], self.entry)
 
+    def test_preflight_refusal_pauses_without_suspending_then_retries(self):
+        import isolated_auth
+        self.save()
+        with patch.object(native, 'perform', side_effect=isolated_auth.PreflightError('unsupported_cli', 'FAKE-REFRESH')) as call:
+            renewal.cycle(self.store, KEY)
+            renewal.cycle(self.store, KEY)  # backoff: no immediate retry
+        call.assert_called_once()
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual((item['state'], item['blocked']), ('ready', 'unsupported_cli'))
+        self.assertGreater(item['next_at'], time.time() + renewal.BLOCKED_RETRY - 60)
+        status = renewal.status(self.store, self.accounts)
+        self.assertEqual(status['accounts'][-2]['state'], 'blocked')
+        self.assertNotIn('FAKE-REFRESH', json.dumps(status))
+        item['next_at'] = time.time() - 1
+        self.save({'codex-1': item})
+        fresh, entry = fake_pair('rotated')
+        with patch.object(native, 'perform', return_value=(fresh, entry)) as call:
+            renewal.cycle(self.store, KEY)
+        call.assert_called_once_with(self.auth)
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual(item['state'], 'ready')
+        self.assertNotIn('blocked', item)
+
     def test_crash_marker_never_replays_token(self):
         item = record(self.auth, self.entry, True)
         item['state'] = 'in_flight'

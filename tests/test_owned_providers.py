@@ -318,6 +318,19 @@ class NativeTests(unittest.TestCase):
             with patch('isolated_auth.shutil.which', return_value=str(binary)), self.assertRaises(live.LiveError):
                 isolated_auth.native('claude')
 
+    def test_auto_updated_claude_falls_back_to_installed_verified_build(self):
+        with tempfile.TemporaryDirectory() as root:
+            versions = Path(root)
+            old, new = versions / '2.1.296', versions / '2.1.299'
+            old.write_bytes(b'verified'); new.write_bytes(b'updated')
+            builds = {**isolated_auth.BUILDS, 'claude': isolated_auth.hashlib.sha256(b'verified').hexdigest()}
+            with patch.dict(isolated_auth.BUILDS, builds), patch('isolated_auth.shutil.which', return_value=str(new)):
+                self.assertEqual(isolated_auth.native('claude'), old)
+                old.unlink()
+                with self.assertRaises(isolated_auth.PreflightError) as caught:
+                    isolated_auth.native('claude')
+            self.assertEqual(caught.exception.code, 'unsupported_cli')
+
     def test_sandbox_does_not_mount_home_or_pass_global_auth_environment(self):
         with patch.object(isolated_auth, 'native', return_value=Path('/fake/native')), patch('isolated_auth.shutil.which', return_value='/usr/bin/bwrap'):
             cmd = isolated_auth.command('claude', '/tmp/owned-fake', claude.ARGS)

@@ -1,4 +1,5 @@
 """Opt-in foreground quota panel. No detached processes or credential writes."""
+import collections
 import ctypes
 import curses
 import datetime as dt
@@ -85,15 +86,38 @@ class Source:
             return accounts, app.account_identity.for_report(entries)
 
 
+# Expected, self-resolving outcomes of following the CLI's renewed token.
+QUIET_SYNC = {"not_fresh", "older_copy", "account_changed"}
+
+
+def renewal_states(store):
+    """Public renewal status only (no grants); missing/invalid status is ignored."""
+    try:
+        status = store.read("renewal-status.json")
+        return {r["id"]: r["state"] for r in status.get("accounts", [])
+                if isinstance(r, dict) and isinstance(r.get("id"), str) and isinstance(r.get("state"), str)}
+    except (FileNotFoundError, AttributeError, app.UsageError, ValueError, TypeError):
+        return {}
+
+
 def collect(path, accounts, entries, jobs, sort, reverse, *, vault_key=None):
     with app.Store(path) as store:
+        notes = []
         if vault_key is not None:
             import saved_refresh
-            entries = saved_refresh.follow_cli(store, accounts, entries, vault_key)
+            entries = saved_refresh.follow_cli(store, accounts, entries, vault_key, notes)
         before = credential_state.current(accounts, entries)
         data = app.concurrent_report(accounts, store, dt.datetime.now(app.UTC), entries, jobs)
         data = credential_state.annotate(data, entries, before,
                                          credential_state.current(accounts, entries), dt.datetime.now(app.UTC))
+        states = renewal_states(store)
+        for row in data["accounts"]:
+            if row["id"] in states:
+                row["renewal_state"] = states[row["id"]]
+        problems = [n["message"] for n in notes if n.get("state") == "source_unavailable"
+                    and n.get("code") not in QUIET_SYNC]
+        if problems:
+            data["cli_sync_problem"] = problems[0]
         return app.sort_report(data, sort, reverse)
 
 
@@ -246,10 +270,19 @@ def next_account(rows, active, now, *, preview=False):
 def unavailable_reason(rows, now):
     if not rows:
         return "No other sub"
+    expired = [r for r in rows if r.get("switch_readiness") in ("expired", "expiring")]
+    if expired and len(expired) == len(rows):
+        if any(r.get("renewal_state") == "blocked" for r in expired):
+            return "Expired · renewal paused"
+        if any(r.get("renewal_state") == "ready" for r in expired):
+            return "Expired · renewing"
+        return f"All {len(rows)} expired · re-enroll"
     if any(r.get("error_code") == "rate_limited" for r in rows):
         return "Throttled · quota unknown"
-    if any(r.get("status") == "error" for r in rows):
+    if any(r.get("status") == "error" and r not in expired for r in rows):
         return "Check failed · quota unknown"
+    if expired:
+        return f"{len(expired)} expired · rest unusable"
     if all(app.recommendation(r, now)[0] == 2 for r in rows):
         return "At quota limit"
     return "Usage/auth unverified"
@@ -300,6 +333,13 @@ def summary_lines(data, width, now, selected_provider=None):
                 result.append((f"  {label:<8}{text}", "muted"))
     if any(r.get('status') == 'recent' for r in data['accounts']):
         result.append(("~ recent check · at most 60s", "muted"))
+    renewal = collections.Counter(r.get("renewal_state") for r in data["accounts"])
+    if renewal["blocked"]:
+        result.append((f"! Renewal paused ({renewal['blocked']}): unverified Claude build", "warn"))
+    if renewal["suspended"] or renewal["in_flight"]:
+        result.append((f"! Renewal stopped ({renewal['suspended'] + renewal['in_flight']}): re-enroll", "warn"))
+    if data.get("cli_sync_problem"):
+        result.append(("! CLI sync: " + data["cli_sync_problem"], "warn"))
     return [(clip(text, max(0, width)), style) for text, style in result]
 
 

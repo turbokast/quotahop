@@ -75,6 +75,25 @@ class RenderTests(unittest.TestCase):
                 self.assertNotIn('\r', s)
         self.assertIn('13 Oct', '\n'.join(s for s, _ in panel.lines(data, 43, NOW, details=True)))
 
+    def test_expired_alternatives_and_renewal_problems_are_named(self):
+        data = fixture()
+        claude = [a for a in data['accounts'] if a['provider'] == 'claude']
+        for a in claude[1:]:
+            a.update(status='error', error_code='token_expired', usage=None, live=False,
+                     switch_readiness='expired', selected=False, renewal_state='suspended')
+        text = '\n'.join(s for s, _ in panel.summary_lines(data, 60, NOW))
+        self.assertIn(f'All {len(claude) - 1} expired · re-enroll', text)
+        self.assertIn('Renewal stopped', text)
+        self.assertNotIn('Check failed', text)
+        claude[1]['renewal_state'] = 'blocked'
+        data['cli_sync_problem'] = 'Current CLI identity has no unique saved account/organization binding.'
+        text = '\n'.join(s for s, _ in panel.summary_lines(data, 120, NOW))
+        self.assertIn('Expired · renewal paused', text)
+        self.assertIn('Renewal paused (1)', text)
+        self.assertIn('CLI sync: Current CLI identity', text)
+        self.assertEqual(app.error_label({'error_code': 'duplicate_account'}), 'DUPLICATE')
+        self.assertEqual(app.error_label({'error_code': 'token_expired'}), 'EXPIRED')
+
     def test_countdown(self):
         for seconds, expected in ((-1, 'due'), (30, '<1m'), (600, '10m'), (3900, '1h05'), (90000, '1d01')):
             self.assertEqual(panel.countdown((NOW + dt.timedelta(seconds=seconds)).isoformat(), NOW), expected)

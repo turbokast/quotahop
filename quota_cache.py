@@ -99,7 +99,7 @@ def fetch(store, ident, entry, seen):
         raise live.LiveError("duplicate_account", "Duplicate saved token; refusing to label one account as two accounts.")
     seen.add(digest)
     if entry.get("expires_at") is not None and entry["expires_at"] <= time.time():
-        raise live.LiveError("authentication_error", "Saved access token has expired. No refresh attempted.")
+        raise live.LiveError("token_expired", "Saved access token has expired. No refresh attempted.")
     with locked(store, ident) as directory:
         name = ident + ".json"
         saved = read(directory, name)

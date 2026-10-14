@@ -601,10 +601,13 @@ def current_usage(row, now):
 
 def error_label(row):
     return {"rate_limited": "THROTTLED", "authentication_error": "AUTH ERROR",
-            "timeout": "TIMEOUT", "network_error": "NETWORK", "tls_error": "TLS ERROR",
-            "http_error": "HTTP ERROR", "invalid_data": "BAD DATA",
+            "token_expired": "EXPIRED", "timeout": "TIMEOUT", "network_error": "NETWORK",
+            "tls_error": "TLS ERROR", "http_error": "HTTP ERROR", "invalid_data": "BAD DATA",
             "worker_failed": "CHECK FAILED", "check_in_progress": "CHECKING",
-            "cache_error": "CACHE ERROR"}.get(row.get("error_code"), "ERROR")
+            "cache_error": "CACHE ERROR", "duplicate_account": "DUPLICATE",
+            "account_mismatch": "WRONG ACCOUNT", "provider_mismatch": "WRONG PROVIDER",
+            "redirect_blocked": "REDIRECTED", "prohibited_endpoint": "BLOCKED",
+            "invalid_credentials": "BAD TOKEN", "unsupported": "UNSUPPORTED"}.get(row.get("error_code"), "ERROR")
 
 
 def recommendation(row, now):

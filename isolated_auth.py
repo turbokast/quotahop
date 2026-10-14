@@ -17,13 +17,36 @@ BUILDS = {
     'claude': '24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de',
     'muse': '82a495542965a5b6256f7acdb81693451c28640a419d5528ad8340ea93f36f6f',
 }
+_digests = {}
+
+
+class PreflightError(live.LiveError):
+    """Refused before any process start or network request; safe to retry later."""
+
+
+def digest(binary):
+    info = binary.stat()
+    key = (str(binary), info.st_size, info.st_mtime_ns)
+    if key not in _digests:
+        with binary.open('rb') as stream:
+            _digests[key] = hashlib.file_digest(stream, 'sha256').hexdigest()
+    return _digests[key]
 
 
 def native(provider):
     executable = shutil.which(provider)
     if not executable:
-        raise live.LiveError('dependency_missing', f'Install the first-party {provider} CLI before enrollment.')
+        raise PreflightError('dependency_missing', f'Install the first-party {provider} CLI before enrollment.')
     binary = Path(executable).resolve(strict=True)
+    if provider == 'claude' and digest(binary) != BUILDS[provider]:
+        # Claude auto-updates into sibling version files and keeps a few older
+        # builds. Keep using the verified build while it remains installed.
+        for sibling in sorted(binary.parent.iterdir(), reverse=True):
+            try:
+                if sibling.is_file() and not sibling.is_symlink() and digest(sibling) == BUILDS[provider]:
+                    return sibling
+            except OSError:
+                continue
     if provider == 'muse':
         with binary.open('rb') as f:
             wrapper = f.read(4) != b'\x7fELF'
@@ -33,17 +56,15 @@ def native(provider):
             if not re.fullmatch(r'[A-Za-z0-9.-]{1,80}', version):
                 raise live.LiveError('unsupported_cli', 'Invalid Muse native version selector.')
             binary = (binary.parent / ('muse-bin-' + version)).resolve(strict=True)
-    with binary.open('rb') as stream:
-        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-    if digest != BUILDS[provider]:
-        raise live.LiveError('unsupported_cli', f'This {provider} build has not been verified for isolated, inference-free authentication; renewal refused.')
+    if digest(binary) != BUILDS[provider]:
+        raise PreflightError('unsupported_cli', f'This {provider} build has not been verified for isolated, inference-free authentication; renewal refused.')
     return binary
 
 
 def command(provider, context, args):
     bwrap = shutil.which('bwrap')
     if not bwrap:
-        raise live.LiveError('dependency_missing', 'Isolated authentication requires bubblewrap (apt install bubblewrap).')
+        raise PreflightError('dependency_missing', 'Isolated authentication requires bubblewrap (apt install bubblewrap).')
     binary = native(provider)
     cmd = [bwrap, '--die-with-parent', '--new-session', '--unshare-user', '--unshare-pid',
            '--unshare-ipc', '--unshare-uts', '--cap-drop', 'ALL']
