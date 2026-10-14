@@ -101,21 +101,21 @@ CLI and closes input: no user message, prompt, turn, tools, or session resume.
 Offline tests verified that this saves the rotated grant without inference.
 `claude auth status` is unsuitable because it can exit before saving rotation.
 
-Renewal updates only this tool's encrypted grant and access-token vault. Use
-`--switch` or `--switch-next` to transfer an independently enrolled Claude grant
-to Claude Code; the worker never performs that switch itself. Before any CLI
-write, the tool permanently marks that grant `cli_owned` and stops renewing it.
-Claude Code receives the complete matching grant and becomes its renewal owner.
-Reports and panels can copy a newer access token back from the current CLI after
-a server-verified account/organisation match, but never copy its refresh token.
+Renewal updates only this tool's encrypted grant and access-token vault. Each
+Claude grant has exactly one renewal owner. `--switch`/`--switch-next` (never the
+worker) gives the target's complete grant to Claude Code, which renews it while
+active (`cli_owned`). While holding Claude Code's `.oauth_refresh.lock`, legacy
+`<config>.lock` and `.storage-write.lock`, the switch writes the target and the
+previous login returns to QuotaHop using Claude Code's latest copy. Claude Code
+re-reads its credentials under the refresh lock and adopts a changed file instead
+of refreshing, so running sessions never refresh the returned grant again.
 
-Legacy Claude grants without ownership tracking are `legacy_hold`, not safe
-background-renewal candidates: a running session may still use their access
-tokens even when another login is selected. A valid legacy grant may be handed
-off once by an explicit switch. To create a fresh privately renewed standby
-grant, forget the old enrollment and enroll again. A handed-off grant never
-becomes privately renewable just because you switched away. Failed handoff writes
-also remain held; no rollback can make a potentially exposed grant safe to rotate.
+The worker mirrors Claude Code's renewals of the active grant (encrypted, in the
+renewal registry) and, if Claude Code's login changes outside QuotaHop (such as
+`/login`), takes the previous account back and adopts the new one after an exact
+token or server-verified account/organisation match. If the current login cannot
+be attributed, nothing is taken back. `legacy_hold` grants resume renewal once
+the CLI is confirmed to hold a different login.
 Reports remain on demand; the worker does not poll quotas. Muse expiry tracking
 performs no network requests or key exchanges.
 

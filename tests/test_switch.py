@@ -96,7 +96,7 @@ class SwitchTests(unittest.TestCase):
         with patch.object(switch, 'apply', side_effect=apply):
             code, result = self.cli('--switch', 'max-1')
         self.assertEqual(code, 0, result)
-        self.assertIn('Claude Code now owns renewal', result['message'])
+        self.assertIn('Claude Code renews this login while active', result['message'])
         self.assertEqual(live.json_object(self.creds.read_bytes())['claudeAiOauth'], oauth)
         with patch('owned_claude.perform', side_effect=AssertionError('already exported')):
             renewal.cycle(self.store, KEY, now=time.time()+86400)

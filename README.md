@@ -207,18 +207,21 @@ grants and Codex grants renew before expiry. Muse tracks expiry but cannot autom
 token. The worker keeps the vault key in memory and never polls quota or switches
 global auth. No service, cron job, or boot startup is installed.
 
-Renewal updates **the vault**. Run `--switch` or `--switch-next` to hand a private
-Claude grant to Claude Code. It then becomes `cli_owned`: only Claude Code may
-renew it, even after you switch away. Reports safely follow a newer current CLI
-access token after verifying its account and organisation. Uncertain refresh
-outcomes suspend the account rather than replay a potentially consumed token.
+Renewal updates **the vault**. Every Claude grant has exactly one renewal owner.
+`--switch`/`--switch-next` gives the target's full grant to Claude Code, which
+renews it while it is active (`cli_owned`). The previous login comes back to
+QuotaHop in the same switch, taken from Claude Code's latest copy while holding
+Claude Code's own refresh locks, and is renewed in the background again. Running
+sessions re-read the file under those locks, so they move to the new login and
+never refresh the old one. If you `/login` in Claude Code yourself, the worker
+notices, takes back the previous account and keeps the new one in sync. Sign in
+once per account; switching never costs a login. Uncertain refresh outcomes
+suspend the account rather than replay a potentially consumed token.
 
-Older Claude grants without ownership tracking show `legacy_hold`; they might
-already be used by running sessions, so QuotaHop will not rotate them. An explicit
-switch can transfer a still-valid grant to Claude Code. For an expired grant or
-a new automatically renewed standby grant, use `--auth-forget ACCOUNT` followed
-by `--auth-enroll ACCOUNT` (add `--plan` when ambiguous). This does not log out or
-revoke the old session. A provider-revoked grant still requires a fresh sign-in.
+Older grants (`legacy_hold`) resume renewal once the worker confirms Claude Code
+is not holding them. For a grant that has already expired, use
+`--auth-forget ACCOUNT` followed by `--auth-enroll ACCOUNT` (add `--plan` when
+ambiguous). This does not log out or revoke the old session. A provider-revoked grant still requires a fresh sign-in.
 
 Claude 2.1.296 and Muse 1.4.6-R6000.1 authentication are pinned to inspected
 Linux executable hashes. Other builds, even with the same version, are refused

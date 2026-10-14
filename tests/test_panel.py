@@ -91,6 +91,10 @@ class RenderTests(unittest.TestCase):
         self.assertIn('Expired · renewal paused', text)
         self.assertIn('Renewal paused (1)', text)
         self.assertIn('CLI sync: Current CLI identity', text)
+        self.assertNotIn('Renewal off', text)
+        data['renewal_running'] = False
+        self.assertIn('! Renewal off: quotahop --background start',
+                      '\n'.join(s for s, _ in panel.summary_lines(data, 120, NOW)))
         self.assertEqual(app.error_label({'error_code': 'duplicate_account'}), 'DUPLICATE')
         self.assertEqual(app.error_label({'error_code': 'token_expired'}), 'EXPIRED')
 

@@ -215,8 +215,17 @@ class JsonFile:
 
 @contextmanager
 def locks(credentials, metadata):
-    # Same mkdir-based locks used by Claude Code 2.1.296. Never remove somebody
-    # else's lock or attempt stale-lock recovery. Hold only during local writes.
+    # Same mkdir-based locks used by Claude Code (2.1.296-2.1.300): refresh
+    # locks first, then the storage write lock, matching Claude's own order.
+    # Never remove somebody else's lock or attempt stale-lock recovery.
+    import cli_ownership
+    with cli_ownership.refresh_locks(credentials.path.parent):
+        with _write_locks(credentials, metadata) as guard:
+            yield guard
+
+
+@contextmanager
+def _write_locks(credentials, metadata):
     acquired = []
     started = time.monotonic()
 
@@ -317,11 +326,18 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
         envelope = store.read("vault.json")
         entries, key, salt = (live.unlock_vault(envelope, None, key=vault_key) if vault_key is not None
                               else live.unlock_cached(store, envelope))
+        import cli_ownership
+        if not dry_run and not undo:
+            # Record which account the CLI holds and its latest grant, so it can
+            # be taken back after the switch. Network-free when already known.
+            cli_ownership.sync(store, key, force=True)
+            entries, key, salt = live.unlock_vault(store.read("vault.json"), None, key=key)
         if automatic:
             if not dry_run:
                 import saved_refresh
                 entries, _ = saved_refresh.synchronize(store, accounts, entries, key, salt)
             selector = recommended_account(store, accounts, entries, plan, jobs)
+        import auth_renewal
         credential_path, metadata_path = paths()
         backup = None
         handoff = None
@@ -354,7 +370,6 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
                 if recommendation(usage, dt.datetime.now(UTC))[0] >= 2:
                     fail("The confirmed subscription no longer has verified available usage. Refresh and choose again.")
             oauth, account = target_auth(selected, entry)
-            import auth_renewal
             handoff = auth_renewal.claude_handoff(store, key, selected['id'], entry)
             if handoff is not None:
                 # The first-party CLI becomes the sole renewal owner. Retiring
@@ -383,6 +398,10 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
                     fail("The current Claude login changed while confirming. Refresh and choose again; no auth changed.")
             if undo and current["claudeAiOauth"].get("accessToken") != backup["installed_token"]:
                 fail("Claude authentication changed since the switch; undo refused to avoid overwriting it.")
+            if undo and oauth.get("refreshToken") and any(
+                    item["auth"].get("claudeAiOauth", {}).get("refreshToken") == oauth["refreshToken"]
+                    for item in auth_renewal.records(store, key).values()):
+                fail("The previous login is maintained by QuotaHop again; reinstalling this older copy could sign it out. Use --switch ACCOUNT instead.")
             if not undo and current["claudeAiOauth"].get("accessToken") == oauth["accessToken"] and handoff is None:
                 return {"message": "This Claude access token is already selected; no files changed.", "account_name": label, "changed": False, **selection}
             # Preflight replacement before storing backup or touching live files.
@@ -402,8 +421,18 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
             apply(credentials, metadata, oauth, account, before_creds, before_meta, guard)
             if undo:
                 store.delete(BACKUP)
+        reclaimed = False
+        if not undo:
+            try:
+                # The CLI now holds the target. Return the outgoing grant to
+                # QuotaHop's renewal so the previous account stays signed in.
+                cli_ownership.sync(store, key, force=True)
+                reclaimed = True
+            except live.LiveError:
+                pass
         return {"message": ("Restored the previous Claude Code authentication." if undo else
-                "Switched shared Claude Code subscription. Claude Code now owns renewal of this grant; QuotaHop will never refresh it again. Existing sessions may need to reload credentials." if handoff is not None else
+                "Switched Claude Code. Claude Code renews this login while active; the previous login returned to QuotaHop's background renewal." if handoff is not None and reclaimed else
+                "Switched Claude Code. Claude Code renews this login while active; QuotaHop will take back the previous login when its background worker next runs." if handoff is not None else
                 "Switched shared Claude Code subscription using an access-only capture. No automatic renewal for this token; re-enroll for a fresh independent grant. Existing sessions may need to reload credentials."),
                 "account_name": label, "changed": True, **selection}
     except OSError:

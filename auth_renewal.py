@@ -342,8 +342,8 @@ def public_status(accounts, saved, *, active=False):
                      'next_at': item['next_at'] if item and state in ('ready', 'blocked') else None,
                      'expires_at': item['entry']['expires_at'] if item else None,
                      'message': (BLOCKED[item['blocked']] if state == 'blocked' else
-                                 'Claude Code owns this grant; QuotaHop will never refresh it. Re-enroll for a new independent standby grant.' if state == 'cli_owned'
-                                 else 'Legacy Claude grant may be in use by a session. Automatic renewal blocked; explicitly switch to hand it to Claude Code, or re-enroll.' if state == 'legacy_hold'
+                                 'Active in Claude Code, which renews it. QuotaHop takes it back automatically when Claude Code switches away.' if state == 'cli_owned'
+                                 else 'Older grant awaiting a check of the current Claude login; renewal resumes once the background worker confirms Claude Code does not hold it.' if state == 'legacy_hold'
                                  else 'Renewal outcome uncertain: re-enroll; automatic retries disabled.' if state in ('in_flight', 'suspended')
                                  else LIMITATIONS[provider] if provider == 'muse_code' else 'Independent grant; renews five minutes before expiry.' if item else LIMITATIONS[provider])})
     return {'running': active, 'checked_at': time.time(), 'ownership_version': 2, 'accounts': rows}
@@ -396,6 +396,12 @@ def cycle(store, key, now=None):
     from claude_usage import validate_accounts
     now = time.time() if now is None else now
     with vault_lock(store):
+        import cli_ownership
+        try:
+            # Take back grants Claude Code no longer holds before renewing.
+            cli_ownership.sync(store, key)
+        except live.LiveError:
+            pass
         accounts = validate_accounts(store.read('accounts.json'))
         saved = records(store, key)
         entries, _, salt = live.unlock_vault(store.read('vault.json'), None, key=key)
@@ -461,8 +467,8 @@ def start(store, data_dir, *, key=None):
                 # through argv, environment, status, or the JSON result.
                 live.unlock_vault(store.read('vault.json'), None, key=key)
             saved = records(store, key)
-            if not any(i['state'] == 'ready' for i in saved.values()):
-                raise live.LiveError('enrollment_required', 'No grants eligible for QuotaHop renewal. CLI-owned and legacy-held Claude grants cannot be renewed here; enroll a fresh independent standby grant with --auth-enroll.')
+            if not any(i['state'] in ('ready', 'cli_owned', 'legacy_hold') for i in saved.values()):
+                raise live.LiveError('enrollment_required', 'No grants to maintain. Enroll a subscription with --auth-enroll first.')
             store.delete(STOP)
     read_fd, write_fd = os.pipe()
     ready_read, ready_write = os.pipe()
@@ -528,7 +534,7 @@ def worker(data_dir, key_fd, ready_fd):
                     pass
                 try:
                     result = cycle(store, key)
-                    if not any(row['state'] in ('ready', 'blocked') for row in result['accounts']):
+                    if not any(row['state'] in ('ready', 'blocked', 'cli_owned', 'legacy_hold') for row in result['accounts']):
                         break
                 except live.LiveError as exc:
                     if exc.code != 'vault_busy':

@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import datetime as dt
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -318,15 +319,20 @@ class NativeTests(unittest.TestCase):
             with patch('isolated_auth.shutil.which', return_value=str(binary)), self.assertRaises(live.LiveError):
                 isolated_auth.native('claude')
 
-    def test_auto_updated_claude_falls_back_to_installed_verified_build(self):
+    def test_auto_updated_claude_keeps_verified_build_after_old_versions_are_pruned(self):
         with tempfile.TemporaryDirectory() as root:
-            versions = Path(root)
+            versions = Path(root) / 'versions'; versions.mkdir()
             old, new = versions / '2.1.296', versions / '2.1.299'
             old.write_bytes(b'verified'); new.write_bytes(b'updated')
             builds = {**isolated_auth.BUILDS, 'claude': isolated_auth.hashlib.sha256(b'verified').hexdigest()}
-            with patch.dict(isolated_auth.BUILDS, builds), patch('isolated_auth.shutil.which', return_value=str(new)):
+            with patch.dict(isolated_auth.BUILDS, builds), patch.dict(os.environ, {'XDG_DATA_HOME': str(Path(root) / 'data')}), \
+                 patch('isolated_auth.shutil.which', return_value=str(new)):
                 self.assertEqual(isolated_auth.native('claude'), old)
-                old.unlink()
+                kept = isolated_auth.retained('claude')
+                old.unlink()  # Claude prunes the verified version
+                self.assertEqual(isolated_auth.native('claude'), kept)
+                self.assertEqual(kept.read_bytes(), b'verified')
+                kept.unlink()
                 with self.assertRaises(isolated_auth.PreflightError) as caught:
                     isolated_auth.native('claude')
             self.assertEqual(caught.exception.code, 'unsupported_cli')

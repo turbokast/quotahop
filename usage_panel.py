@@ -111,6 +111,12 @@ def collect(path, accounts, entries, jobs, sort, reverse, *, vault_key=None):
         data = credential_state.annotate(data, entries, before,
                                          credential_state.current(accounts, entries), dt.datetime.now(app.UTC))
         states = renewal_states(store)
+        if states:
+            import auth_renewal
+            try:
+                data["renewal_running"] = auth_renewal.running(store)
+            except live.LiveError:
+                data["renewal_running"] = False
         for row in data["accounts"]:
             if row["id"] in states:
                 row["renewal_state"] = states[row["id"]]
@@ -334,6 +340,8 @@ def summary_lines(data, width, now, selected_provider=None):
     if any(r.get('status') == 'recent' for r in data['accounts']):
         result.append(("~ recent check · at most 60s", "muted"))
     renewal = collections.Counter(r.get("renewal_state") for r in data["accounts"])
+    if data.get("renewal_running") is False:
+        result.append(("! Renewal off: quotahop --background start", "high"))
     if renewal["blocked"]:
         result.append((f"! Renewal paused ({renewal['blocked']}): unverified Claude build", "warn"))
     if renewal["suspended"] or renewal["in_flight"]:

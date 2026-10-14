@@ -33,18 +33,46 @@ def digest(binary):
     return _digests[key]
 
 
+def retained(provider):
+    base = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share')
+    return base / 'quotahop' / f'{provider}-{BUILDS[provider][:16]}'
+
+
+def retain(binary, kept):
+    """Best effort: a hard link (no copy) to the verified executable."""
+    if kept.exists():
+        return
+    try:
+        kept.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.link(binary, kept)
+    except OSError:
+        try:
+            temp = kept.with_name(kept.name + '.tmp')
+            shutil.copy2(binary, temp)
+            if digest(temp) == BUILDS['claude']:
+                os.replace(temp, kept)
+            else:
+                temp.unlink()
+        except OSError:
+            pass
+
+
 def native(provider):
     executable = shutil.which(provider)
     if not executable:
         raise PreflightError('dependency_missing', f'Install the first-party {provider} CLI before enrollment.')
     binary = Path(executable).resolve(strict=True)
-    if provider == 'claude' and digest(binary) != BUILDS[provider]:
-        # Claude auto-updates into sibling version files and keeps a few older
-        # builds. Keep using the verified build while it remains installed.
-        for sibling in sorted(binary.parent.iterdir(), reverse=True):
+    if provider == 'claude':
+        # Claude auto-updates into sibling version files and later prunes old
+        # ones. Keep a private hard link to the verified build so renewal never
+        # depends on which versions Claude still retains.
+        kept = retained(provider)
+        for candidate in (binary, kept, *sorted(binary.parent.iterdir(), reverse=True)):
             try:
-                if sibling.is_file() and not sibling.is_symlink() and digest(sibling) == BUILDS[provider]:
-                    return sibling
+                if candidate.is_file() and not candidate.is_symlink() and digest(candidate) == BUILDS[provider]:
+                    if candidate != kept:
+                        retain(candidate, kept)
+                    return candidate
             except OSError:
                 continue
     if provider == 'muse':
