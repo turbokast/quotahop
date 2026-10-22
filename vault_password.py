@@ -141,4 +141,6 @@ def change(store, data_dir):
         if is_new:
             raise live.LiveError('rekey_finish', 'Encrypted files now use the NEW password, but final cleanup reported an error. Check --background status; no credentials were deleted.') from None
         raise
+    import login_keyring
+    login_keyring.rekey(store, envelope, files['vault.json'], new_key)
     return restart(store, data_dir, new_key, wanted)

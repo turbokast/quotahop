@@ -119,6 +119,30 @@ the CLI is confirmed to hold a different login.
 Reports remain on demand; the worker does not poll quotas. Muse expiry tracking
 performs no network requests or key exchanges.
 
+### Renewal after reboot
+
+The worker keeps the vault key only in memory, so a reboot stops it. The next
+unlock (any report, or `u` in the panel) restarts it automatically; grants keep
+30-day refresh tokens, so logins that expired meanwhile recover within seconds.
+
+To restart renewal at desktop login without unlocking, opt in once:
+
+```sh
+quotahop --background enable-autostart   # asks for the passphrase once
+quotahop --background disable-autostart  # removes the stored key and login item
+```
+
+This stores the derived vault key in your desktop login keyring (Secret Service,
+e.g. GNOME Keyring, unlocked by PAM at login) and adds an XDG autostart entry.
+Trade-off: while you are logged in, any process running as you can read the key;
+at rest it is protected by your login password through the keyring rather than
+by the vault passphrase. Processes running as you can already read Claude Code's
+and Codex's active logins in plaintext and could modify a user-writable
+QuotaHop install to capture the passphrase, so the practical loss is small on a
+single-user machine with a strong login password. Avoid it with auto-login,
+an empty keyring password, or shared accounts. `--lock` does not remove the
+stored key; use `disable-autostart`. Password changes update the stored key.
+
 Successful `--auth-enroll` (or manual `--background start`) keeps the derived vault key in
 worker memory until stopped. Your normal five-minute command unlock cache still
 expires on schedule. `--lock` stops the worker before clearing that cache.

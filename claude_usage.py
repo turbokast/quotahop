@@ -976,7 +976,9 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     actions.add_argument("--lock", action="store_true", help="lock open panels, stop this vault's worker and clear its five-minute unlock cache")
     actions.add_argument("--change-password", "--reset-password", action="store_true",
                          help="set a new vault password; preserve credentials (current password or cached unlock required)")
-    actions.add_argument("--background", choices=("start", "status", "stop"), help="start, inspect or stop independent auth maintenance; no quota polling")
+    actions.add_argument("--background", choices=("start", "status", "stop", "enable-autostart", "disable-autostart"),
+                         help="start, inspect or stop independent auth maintenance; no quota polling. "
+                              "enable-autostart keeps the vault key in your desktop login keyring so renewal restarts at login")
     actions.add_argument("--auth-enroll", metavar="ACCOUNT", help="sign in separately for a saved account and start background maintenance")
     actions.add_argument("--auth-forget", metavar="ACCOUNT", help="forget an independent renewal grant; retain the last access token; no logout")
     actions.add_argument("--refresh", action="store_true", help="sync an already-renewed current CLI token and report usage; no OAuth renewal")
@@ -1007,6 +1009,7 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     parser.add_argument("--sort", choices=SORT_COLUMNS, default="recommended", metavar="COLUMN",
                         help="sort within groups: recommended (default), name, plan, 5h, 7d, 5h-reset, 7d-reset, status")
     parser.add_argument("--reverse", action="store_true", help="sort descending within each provider group; unknowns stay last")
+    parser.add_argument("--from-keyring", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                         help="terminal colours (default: auto; respects NO_COLOR and redirected output)")
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -1058,6 +1061,9 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 auth_renewal.stop(store)
                 live_usage.lock_vault(store)
                 message = "Vault locked. The next command needing saved credentials will ask for your passphrase."
+                import login_keyring
+                if login_keyring.enabled():
+                    message += " Autostart is still enabled: the login keyring keeps the key. Use --background disable-autostart to remove it."
                 print(json.dumps({"message": message}) if args.json else message)
                 return 0
             if args.setup:
@@ -1076,8 +1082,17 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                     result = auth_renewal.status(store, accounts)
                 elif args.background == "stop":
                     result = auth_renewal.stop(store)
+                elif args.background == "start" and args.from_keyring:
+                    import login_keyring
+                    result = login_keyring.start_from_keyring(store, args.data_dir)
                 elif args.background == "start":
                     result = auth_renewal.start(store, args.data_dir)
+                elif args.background == "enable-autostart":
+                    import login_keyring
+                    result = login_keyring.enable(store, args.data_dir)
+                elif args.background == "disable-autostart":
+                    import login_keyring
+                    result = login_keyring.disable()
                 elif args.auth_enroll is not None:
                     result = auth_renewal.enroll_and_start(store, args.data_dir, accounts, args.auth_enroll, args.plan)
                 else:

@@ -218,6 +218,10 @@ notices, takes back the previous account and keeps the new one in sync. Sign in
 once per account; switching never costs a login. Uncertain refresh outcomes
 suspend the account rather than replay a potentially consumed token.
 
+A reboot stops the worker; your next unlock restarts it, or opt in to
+`--background enable-autostart` to restart it at desktop login using your login
+keyring ([trade-offs](USAGE.md#renewal-after-reboot)).
+
 Older grants (`legacy_hold`) resume renewal once the worker confirms Claude Code
 is not holding them. For a grant that has already expired, use
 `--auth-forget ACCOUNT` followed by `--auth-enroll ACCOUNT` (add `--plan` when
