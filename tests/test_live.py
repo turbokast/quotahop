@@ -47,7 +47,7 @@ class LiveNetworkTests(unittest.TestCase):
         self.assertEqual(args, ("GET", "/api/oauth/usage"))
         self.assertNotIn("body", kwargs)
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer " + FAKE_TOKEN)
-        self.assertEqual(kwargs["headers"]["User-Agent"], "private-claude-usage/1.0")
+        self.assertEqual(kwargs["headers"]["User-Agent"], "quotahop/1.0")
         self.assertNotIn(FAKE_REFRESH, str(self.connection.mock_calls))
         self.connection.request.assert_called_once()
         self.connection.close.assert_called_once()

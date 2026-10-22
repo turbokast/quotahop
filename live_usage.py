@@ -429,7 +429,7 @@ class UsageClient:
             raise LiveError("prohibited_endpoint", "Account routing header is only allowed for Codex.")
         host, path = self.routes[url]
         headers = {"Authorization": "Bearer " + access_token,
-                   "User-Agent": "private-claude-usage/1.0",
+                   "User-Agent": "quotahop/1.0",
                    "Accept": "application/json", "Connection": "close"}
         if url == CODEX_URL:
             headers["ChatGPT-Account-Id"] = account_id

@@ -932,7 +932,8 @@ def main(argv=None):
         formatter_class=AlphabeticalHelpFormatter,
         description=("QuotaHop — Claude, Codex and Muse Code subscription usage.\n"
                      "No action: fetch each configured account once, show the table, and exit.\n"
-                     "Choose at most one action. Reports never run inference, login or renewal."),
+                     "Choose at most one action. Reports never run inference, login or token renewal;\n"
+                     "an unlock restarts a stopped renewal worker unless you stopped it explicitly."),
         epilog="""Account selectors:
   ACCOUNT is a saved ID, email or name. Use --plan for ambiguous names.
   --capture also accepts claude, codex or muse to detect the current account.
@@ -952,8 +953,9 @@ Authentication:
   --auth-enroll starts background maintenance after a separate sign-in.
   Private Claude/Codex grants: automatic renewal.
   Muse: expiry tracking, no device-token renewal.
-  --switch hands enrolled Claude grants to Claude Code, which then owns renewal.
-  Previously shared Claude grants are held from tool renewal for session safety.
+  --switch gives the target's Claude grant to Claude Code, which renews it while
+  active, and takes the previous login back for QuotaHop renewal.
+  --background enable-autostart restarts renewal at desktop login (login keyring).
   --muse-cli-current uses a bootstrap POST, not a read-only API contract.
   Enter passwords only at hidden prompts, never in arguments or configuration.
 
@@ -973,7 +975,7 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--setup", action="store_true", help="create the optional seven-Claude-account template; keep existing settings")
     actions.add_argument("--panel", action="store_true", help="open a compact foreground panel; refresh while open; q closes, l locks")
-    actions.add_argument("--lock", action="store_true", help="lock open panels, stop this vault's worker and clear its five-minute unlock cache")
+    actions.add_argument("--lock", action="store_true", help="lock open panels, stop this vault's worker until --background start, and clear its five-minute unlock cache (an autostart key stays; see disable-autostart)")
     actions.add_argument("--change-password", "--reset-password", action="store_true",
                          help="set a new vault password; preserve credentials (current password or cached unlock required)")
     actions.add_argument("--background", choices=("start", "status", "stop", "enable-autostart", "disable-autostart"),
@@ -1211,7 +1213,7 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
         if args is not None and args.json:
             print(json.dumps({"error": message, "live": False}))
         else:
-            print("claude-usage: " + message, file=sys.stderr)
+            print("quotahop: " + message, file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         return 130

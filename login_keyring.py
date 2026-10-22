@@ -146,6 +146,8 @@ def start_from_keyring(store, data_dir, wait=60):
         return {"message": "No usable vault key in the login keyring; renewal not started. Run quotahop --background enable-autostart.", "running": False}
     if auth_renewal.running(store):
         return {"message": "Background renewal already running.", "running": True}
+    if auth_renewal.explicitly_stopped(store):
+        return {"message": "Renewal was stopped explicitly; run quotahop --background start to resume.", "running": False}
     return auth_renewal.start(store, data_dir, key=key)
 
 

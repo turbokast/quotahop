@@ -2,7 +2,7 @@
 
 A small, live **Claude / Codex / Muse Code** quota panel alongside your work.
 Uses your existing QuotaHop installation and vault. Linux, Python 3.12+, Herdr
-0.9.1+. No extra Python packages, separate account store, or hosted service.
+0.9.1+. No Python packages beyond QuotaHop's own, separate account store, or hosted service.
 
 ```text
 QUOTAHOP · remaining
@@ -70,7 +70,7 @@ source to update it. Neither operation deletes the QuotaHop vault.
 | `↑` / `↓`, `j` / `k` | Select a provider in the summary; scroll in details. |
 | Enter | Preview the selected provider's Next subscription; Enter again confirms. Claude only. |
 | Escape | Cancel a confirmation; otherwise close the panel. |
-| `u` | Unlock the panel using the existing vault/cache. |
+| `u` | Unlock the panel using the existing vault/cache. May restart a stopped renewal worker (not after an explicit stop). |
 | `r` | Check now; recent Claude results can be reused, and HTTP 429 cooldowns cannot be bypassed. |
 | `p` | Pause/resume quota checks; cancel any active batch. |
 | `d` | Toggle the full account list, used percentages, plans, resets and errors. |
@@ -78,13 +78,27 @@ source to update it. Neither operation deletes the QuotaHop vault.
 | `l` | Lock this panel and clear its displayed report. |
 | `q` / Ctrl-C | Close and release the panel's unlock (`q` cancels first if confirming). |
 
-**Active** means the subscription verified against the current CLI credentials.
-**Next** uses the same ranking as the CLI, excluding the active subscription,
-expired credentials, exhausted quotas and unverified alternatives. Claude
-alternatives must also be ready to switch. It never switches automatically.
-If selection cannot be verified, Active says **Unverified**; with only one saved
-account, **Saved?** shows that account's quota without claiming it is active.
-Snapshots and failed retrievals are never presented as available quota.
+**Active** means the subscription verified against the current CLI credentials
+(Claude by access token, Codex by ChatGPT account ID). **Next** uses the same
+ranking as the CLI, excluding the active subscription, expired credentials,
+exhausted quotas and unverified alternatives. Claude alternatives must also be
+ready to switch. It never switches automatically. If selection cannot be
+verified, Active says **Unverified**; with only one saved account, **Saved?**
+shows that account's quota without claiming it is active, and with several,
+**Best?** shows the best saved candidate while switching stays blocked. A `~`
+after a label marks a reused recent check. Snapshots and failed retrievals are
+never presented as available quota.
+
+When no alternative qualifies, Next explains why: `No other sub`,
+`All N expired · re-enroll`, `Expired · renewing`, `Expired · renewal paused`,
+`Throttled · quota unknown`, `Check failed · quota unknown`,
+`N expired · rest unusable`, `At quota limit`, or `Usage/auth unverified`. A
+failed row shows its error label (`EXPIRED`, `THROTTLED`, `AUTH ERROR`,
+`DUPLICATE`, `WRONG ACCOUNT`, …). Footer warnings read
+`! Renewal off: quotahop --background start`,
+`! Renewal paused (n): unverified Claude build`,
+`! Renewal stopped (n): re-enroll`, and `! CLI sync: …`. The
+[usage guide](../../USAGE.md#side-panel) explains each.
 
 The selected provider has a highlighted heading. **Enter** shows the exact account,
 plan and remaining quota before changing anything; **Enter again** confirms,
@@ -156,23 +170,26 @@ description = "open quota panel"
 ## Authentication and lifecycle
 
 Only an explicitly opened panel polls usage. Ordinary `quotahop` still fetches
-once and exits. The panel starts no service, timer, detached process, native
-login, inference or token renewal. Only an explicit confirmed switch changes
-Claude authentication. Closing it stops its own
-workers; a separately enrolled renewal worker is unaffected.
+once and exits. The panel itself starts no service, timer, native login,
+inference or token renewal, and only an explicit confirmed switch changes Claude
+authentication. **Unlocking (`u`) can restart the shared renewal worker** when
+grants need maintenance, unless it was stopped explicitly with
+`quotahop --background stop` or `--lock`. That worker is a separate process that
+outlives the panel; closing the panel stops only its own check workers.
 
 After unlocking, **the panel retains its derived vault key in memory until
 locked or closed**. It does not extend the five-minute cache for other commands.
-Each check rereads the encrypted vault to see credentials updated by independent
-renewal. `quotahop --lock` also signals all panels for this vault to lock and clear
-their displays, checked about once per second. A password change invalidates
-the panel's old key on its next check. `l` locks only this panel, leaving the
-normal cache and independent renewal worker alone.
+Each check rereads the encrypted vault to see credentials updated by renewal.
+`quotahop --lock` also signals all panels for this vault to lock and clear
+their displays, checked about once per second, and stops the worker. A password
+change invalidates the panel's old key on its next check. `l` locks only this
+panel, leaving the normal cache and renewal worker alone.
 
-After a confirmed Claude switch, the first-party CLI owns the grant's renewal;
-QuotaHop never rotates that grant again. The panel follows a newer current CLI
-access token using read-only file reads and a verified account/organisation
-profile. Switching away does not restore QuotaHop's renewal ownership.
+After a confirmed Claude switch, Claude Code renews the new login while it is
+active and the previous login returns to QuotaHop's background renewal, so
+neither is refreshed by both. The panel follows Claude Code's newer access token
+for grants it holds using read-only file reads and a verified account/organisation
+profile (at most one profile GET per check).
 
 The panel uses the same provider clients as the report, including the **Muse
 CLI bootstrap POST** when that source is configured. Repeated checks therefore

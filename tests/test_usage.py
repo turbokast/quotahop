@@ -349,7 +349,7 @@ sys.addaudithook(audit)
 sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name="__main__")
 '''
-        completed = subprocess.run([sys.executable, "-B", "-c", wrapper, str(ROOT / "claude-usage"),
+        completed = subprocess.run([sys.executable, "-B", "-c", wrapper, str(ROOT / "quotahop"),
                                     "--data-dir", str(self.directory), "--json"],
                                    env=env, capture_output=True, text=True, timeout=3)
         self.assertEqual(completed.returncode, 3, completed.stderr)

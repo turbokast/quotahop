@@ -92,7 +92,7 @@ class SortingTests(unittest.TestCase):
 class ResponsiveTests(unittest.TestCase):
     def setUp(self):
         self.data = {'selection_checked': True, 'accounts': []}
-        for provider, name in [('codex','liam@example.test'), ('claude','claudeteam3@example.test'),
+        for provider, name in [('codex','codex-user@example.test'), ('claude','team-seat-3@example.test'),
                                ('muse_code','very-long-subscription-email@example.test'),
                                ('claude','李 / Cafe\u0301 ' * 8)]:
             item = row(name, provider, name, 42, '2026-10-14T02:00:00Z')

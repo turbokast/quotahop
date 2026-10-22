@@ -31,8 +31,8 @@ class HelpTests(unittest.TestCase):
                        'not a read-only API contract', 'Readiness is not renewal status', 'side the checkout'):
             self.assertIn(phrase, text)
 
-    def test_installed_and_legacy_names_work_in_examples(self):
-        for program in ('quotahop', 'claude-usage'):
+    def test_installed_and_custom_names_work_in_examples(self):
+        for program in ('quotahop', 'qh'):
             out = io.StringIO()
             with patch('sys.argv', [program]), contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
                 app.main(['--help'])

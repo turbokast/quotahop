@@ -1,672 +1,69 @@
 # QuotaHop usage guide
 
-See [README](README.md) for installation and a quick start.
-`./quotahop` and the original `./claude-usage` command are equivalent.
-
-To change or reset the vault password without losing accounts, use
-`quotahop --change-password` (alias `--reset-password`). See the
-[password-change guide](README.md#change-the-vault-password) for worker restart,
-interruption recovery, and forgotten-password limitations.
-
-In the compact report, `● LIVE` means usage was fetched successfully;
-`● LIVE ✓` additionally marks a Claude switching candidate. The checkmark is
-not a background-renewal indicator; use `--background status` for that.
-`◷ RECENT` identifies a successful Claude check reused for up to 60 seconds.
-Reports, switches and panels share this cache; original check times are preserved.
-`THROTTLED` means HTTP 429 from the usage endpoint, not exhausted subscription
-quota. A shared cooldown honors Retry-After, with a five-minute minimum and a
-one-day maximum. Authentication, timeout, network and malformed-response errors
-also have distinct labels; `--verbose` includes the explanation.
-
-For an explicitly opened, refreshing side panel, use `quotahop --panel` or the
-[Herdr plugin](plugins/herdr/README.md). It refreshes every 60 seconds only while
-running in the foreground, keeps its own unlock in memory, and closes with `q`.
-`--panel-interval SECONDS` changes the interval (30–3600). Ordinary reports below
-remain one-shot. `--lock` also locks open panels for the same vault.
-In the panel, ↑/↓ selects a provider; Enter previews Next and a second Enter
-confirms a Claude switch. Esc cancels. Codex/Muse switching is unavailable.
-For the CLI, `--switch-next --provider claude` explicitly selects the provider.
-
-Checks **Claude, Codex, and Muse Code subscription quotas**, then exits.
-Claude/Codex use at most one GET each (Claude can reuse a recent check). Muse portal sources use one identity GET and one subscription
-quota GET for the portal team you select. Ordinary reports perform no inference, login,
-logout, OAuth renewal, or polling. Explicit independent Claude/Codex enrollment and
-background renewal are available below. Muse supports independent enrollment and expiry
-tracking; automatic renewal of its device access token is unavailable. These are first-party usage endpoints, not documented public HTTP
-APIs or guaranteed integrations; see [research](RESEARCH.md). An explicit
-`--muse-cli-current` option also checks the current Muse CLI login via its
-bootstrap POST, described below. A combined-report Muse row can explicitly
-select that route with `"source": "cli_current"`. Other account sources retain
-their GET-only behavior.
-
-The report adapts to your terminal width: full columns where they fit, compact
-usage/reset columns otherwise, and stacked rows below 76 columns. Names wrap
-without truncation. Compact resets show time remaining; `--verbose` includes
-exact local timestamps and full details. `--json` is unaffected.
-
-Reports, captures, and `--refresh` preserve provider authentication. Explicit
-`--switch`, `--switch-next`, and `--undo-switch` change only shared **Claude Code** subscription
-auth, preserving Claude Design, MCP credentials, and unrelated configuration.
-
-Setup creates seven optional Claude template slots. Captured accounts
-are identified by **email or account name**; unknown slots keep placeholders.
-Muse CLI usage has been verified live; the portal reader still awaits an
-authenticated check. See [verification details](RESEARCH.md#installed-muse-cli-verification).
-
-## Optional background authentication renewal
-
-**Claude and Codex:** independently enrolled accounts renew automatically, five
-minutes before expiry. **Muse:** independent device sign-in, usage reporting, and
-background expiry tracking are supported. The installed Muse CLI can re-mint an
-API key but does not renew its device access token. This tool does not substitute
-key re-minting for token renewal; it reports `reauth_required` at expiry.
-
-Enroll each saved account once. Successful enrollment starts the background worker automatically:
-
-```sh
-./claude-usage --auth-enroll 'you@example.com' --plan max_20x
-./claude-usage --auth-enroll 'you@example.com' --plan team_premium
-./claude-usage --auth-enroll 'you@example.com' --plan codex
-./claude-usage --auth-enroll muse-1
-./claude-usage --background status
-./claude-usage
-```
-
-Repeat the relevant enrollment command for each subscription. **`--plan` is optional**
-when an email, name, or ID identifies exactly one saved subscription: the tool uses
-that row's plan and verifies the new login against it. For an email shared by Max
-and Team, specify `--plan` or use the unique subscription ID, e.g.
-`--auth-enroll team-2`. An ambiguous match is rejected before stopping any worker;
-the tool never guesses which subscription you intend. For a new row, use `--add ID --plan PLAN --name EMAIL`
-first. Claude uses its native browser/code sign-in; Codex and Muse display native
-device sign-in instructions. Complete each sign-in with the intended account and
-organisation. Existing email, workspace and Claude organisation bindings must
-match. Same-email Max and Team subscriptions remain separate. Expired or revoked
-captures do not block a fresh independent sign-in: enrollment never contacts the
-provider using the old token. For legacy Claude captures without an organisation
-binding, the newly authenticated profile establishes that binding after email
-and plan checks. Select the intended organisation during sign-in. An existing
-organisation binding must still match, and duplicate bound subscriptions are rejected.
-
-Only new, independently signed-in grants qualify. Shared CLI refresh tokens are
-never imported. Enrolling Muse makes that row use its saved independent login,
-even if it previously followed `source: cli_current`. Other Muse sources are
-unchanged. Muse enrollment uses its native key bootstrap with onboarding disabled;
-it is not a read-only operation. Its subsequent reports use the existing guarded
-bootstrap usage reader and reject a changed API key.
-
-Codex renewal uses its documented `account/read` RPC with `refreshToken: true`.
-Claude sends exactly one initialization control frame to an empty isolated native
-CLI and closes input: no user message, prompt, turn, tools, or session resume.
-Offline tests verified that this saves the rotated grant without inference.
-`claude auth status` is unsuitable because it can exit before saving rotation.
-
-Renewal updates only this tool's encrypted grant and access-token vault. Each
-Claude grant has exactly one renewal owner. `--switch`/`--switch-next` (never the
-worker) gives the target's complete grant to Claude Code, which renews it while
-active (`cli_owned`). While holding Claude Code's `.oauth_refresh.lock`, legacy
-`<config>.lock` and `.storage-write.lock`, the switch writes the target and the
-previous login returns to QuotaHop using Claude Code's latest copy. Claude Code
-re-reads its credentials under the refresh lock and adopts a changed file instead
-of refreshing, so running sessions never refresh the returned grant again.
-
-The worker mirrors Claude Code's renewals of the active grant (encrypted, in the
-renewal registry) and, if Claude Code's login changes outside QuotaHop (such as
-`/login`), takes the previous account back and adopts the new one after an exact
-token or server-verified account/organisation match. If the current login cannot
-be attributed, nothing is taken back. `legacy_hold` grants resume renewal once
-the CLI is confirmed to hold a different login.
-Reports remain on demand; the worker does not poll quotas. Muse expiry tracking
-performs no network requests or key exchanges.
-
-### Renewal after reboot
-
-The worker keeps the vault key only in memory, so a reboot stops it. The next
-unlock (any report, or `u` in the panel) restarts it automatically; grants keep
-30-day refresh tokens, so logins that expired meanwhile recover within seconds.
-
-To restart renewal at desktop login without unlocking, opt in once:
-
-```sh
-quotahop --background enable-autostart   # asks for the passphrase once
-quotahop --background disable-autostart  # removes the stored key and login item
-```
-
-This stores the derived vault key in your desktop login keyring (Secret Service,
-e.g. GNOME Keyring, unlocked by PAM at login) and adds an XDG autostart entry.
-Trade-off: while you are logged in, any process running as you can read the key;
-at rest it is protected by your login password through the keyring rather than
-by the vault passphrase. Processes running as you can already read Claude Code's
-and Codex's active logins in plaintext and could modify a user-writable
-QuotaHop install to capture the passphrase, so the practical loss is small on a
-single-user machine with a strong login password. Avoid it with auto-login,
-an empty keyring password, or shared accounts. `--lock` does not remove the
-stored key; use `disable-autostart`. Password changes update the stored key.
-
-Successful `--auth-enroll` (or manual `--background start`) keeps the derived vault key in
-worker memory until stopped. Your normal five-minute command unlock cache still
-expires on schedule. `--lock` stops the worker before clearing that cache.
-No service, cron job, or startup entry is installed: after reboot or worker exit,
-run `--background start` again. Status and stop require no passphrase.
-Enrollment automatically pauses an existing worker and restarts it afterward.
-It reuses the enrollment unlock even if sign-in takes longer than the five-minute
-cache TTL. Failed or cancelled sign-in restores a previously running worker;
-first-time failure starts none. Cancel sign-in with Ctrl-C. If startup fails after
-a successful sign-in, the CLI says the login was saved and exits with status 1;
-retry `--background start`, without enrolling again.
-
-Enrollment requires the relevant **native provider CLI** on PATH and **bubblewrap** (Ubuntu:
-`sudo apt install bubblewrap`). Native authentication runs with a fresh home and
-provider configuration inside a filesystem/PID sandbox. Existing home directories,
-CLI credential stores, Design auth, keyrings, and shell configuration are not
-mounted. Only that subprocess receives isolated HOME/CODEX_HOME values; your
-shell and global environment stay unchanged. Claude 2.1.296 and Muse 1.4.6-R6000.1
-are pinned by executable SHA-256 to the builds tested offline; an upgrade fails
-closed until its authentication behavior is verified. Claude renewal uses an older
-verified build still installed beside the updated one. Refusals that happen before
-any process starts pause renewal (`blocked`, retried every 10 minutes) rather than
-suspending, because the refresh token was never sent. Muse updater wrappers are
-not executed. If isolation cannot be created,
-the operation fails; there is no unsandboxed fallback.
-
-Renewable grants are encrypted in `.usage-data/renewal.json` with a separate
-AES-GCM context and the vault key. First-party auth files exist briefly in a
-0700 temporary directory as 0600 files and are removed on normal/error cleanup.
-A forced kill or power failure can leave that private temporary directory; no
-claim of secure disk erasure is made. The worker disables core dumps and process
-memory inspection. As with the existing vault, root or a compromised user account
-is outside the protection boundary.
-
-Refreshes are serialized. An encrypted in-flight marker is saved before calling
-the provider, and rotated credentials are persisted before publishing access
-tokens. Any failed or interrupted refresh **suspends** that account; an uncertain
-rotation is never automatically replayed. To recover:
-
-```sh
-./claude-usage --background stop
-./claude-usage --auth-forget 'you@example.com' --plan codex
-./claude-usage --auth-enroll 'you@example.com' --plan codex
-```
-
-Forget deletes only this tool's renewable grant, retaining its last access token;
-it never logs out or revokes a provider session. `--remove` also deletes the grant.
-Capture refuses to overwrite an enrolled account until it is forgotten. The
-worker stops automatically if no renewable accounts remain ready. `--background
-status --json` provides account state, expiry, and next renewal time without
-exposing tokens. Status is the last observation; a stopped worker does not renew.
-
-## Capture by account identity
-
-While the desired account is signed in through your normal workflow:
-
-```sh
-./claude-usage --capture claude --plan team_premium
-./claude-usage --capture claude --plan max_20x
-./claude-usage --capture codex
-```
-
-Run the appropriate command for the current account, then switch normally before
-capturing a different one. The capture detects its email/name, prints which
-account was saved, and reuses its existing row or an empty matching template
-slot. You do not need to remember `team-1`, `max-2`, etc. Repeated captures of the
-same identified account and subscription type update that row. Distinct Codex workspace routing
-IDs are never merged just because they share an email.
-
-**Personal Max and a Team seat can share the same email.** Capture each while
-that subscription is the current Claude login, specifying its plan:
-
-```sh
-./claude-usage --capture 'you@example.com' --plan max_20x
-# Switch to your Team subscription using your normal login workflow, then:
-./claude-usage --capture 'you@example.com' --plan team_premium
-```
-
-These create separate rows and keep separate copied access tokens. Recapture with
-the same `--plan` to update only that subscription. An email shared by both rows
-requires `--plan` or a unique saved ID. The same token cannot be captured as two
-subscriptions. If an earlier capture overwrote one, recapture each subscription;
-the tool cannot recover a token that was previously replaced.
-
-You can also select a saved account by email/name, or supply one for a new account:
-
-```sh
-./claude-usage --capture 'you@example.com'
-./claude-usage --capture 'you@example.com' --plan team_premium
-./claude-usage --capture 'Work account' --plan codex
-```
-
-For a new email/name, specify `--plan`. If local identity is available, its email
-takes precedence over a supplied display name; a supplied email that disagrees
-is refused. If identity is missing, your supplied name/email is used as the
-label, or use `--name 'Work account'` with a provider selector. Plan labels for
-Claude remain user-supplied. Use `--plan` to distinguish the same email across
-providers or subscription types; ambiguity within the same plan requires a
-unique saved ID. Capturing by an existing ID cannot change its subscription type.
-
-## Switch the shared Claude Code subscription
-
-```sh
-# Automatically choose and switch to the best usable Claude subscription:
-./claude-usage --switch-next
-# Preview, or restrict the choice to Team seats:
-./claude-usage --switch-next --dry-run
-./claude-usage --switch-next --plan team_premium
-# Choose a specific subscription yourself:
-./claude-usage --switch 'you@example.com' --plan max_20x
-./claude-usage --switch 'you@example.com' --plan team_premium
-# Unique saved IDs also work:
-./claude-usage --switch team-1
-# Validate the target without changing Claude files:
-./claude-usage --switch team-1 --dry-run
-# Restore the preceding local Claude Code authentication:
-./claude-usage --undo-switch
-```
-
-`--switch-next` uses exactly the default table ranking: the smaller remaining
-percentage across reported main windows, divided by `1 + hours to the soonest
-reset`. It checks each eligible Claude account once, using the existing bounded
-foreground concurrency. Codex and Muse are not queried by this command. Expired,
-nearly expired, missing-scope, exhausted, failed, and unknown-usage accounts cannot
-win; snapshots cannot win either. Missing reset times rank below known future
-resets. If nothing qualifies, authentication stays untouched. If the winning
-token is already selected, nothing changes. The final profile check still has
-to pass; it does not silently switch to a different identity after a failure.
-`--sort` overrides and `--reverse` are rejected for this action.
-
-Switching is **Claude-only** and runs only when explicitly requested. It first
-checks the saved token's expiry and makes one `GET` to
-`https://api.anthropic.com/api/oauth/profile` to validate the account and Max/Team
-organization type. This is the installed CLI's first-party, undocumented profile
-endpoint, with its own exact GET-only allowlist. It is not a public switching API.
-Wrong emails, mismatched Max/Team types, ambiguous selections, and expired or
-nearly expired tokens are rejected before changing authentication.
-
-The only changed JSON values are:
-
-- `claudeAiOauth` in the existing `.credentials.json`;
-- `oauthAccount` in the existing `.claude.json`.
-
-All surrounding file bytes are preserved, including `designOauth`, `mcpOAuth`,
-settings, project data, and caches. Existing file modes and group ownership are
-preserved. No logout/login command, CLI process, inference, token refresh,
-environment-variable change, or symlink is used. The tool honors existing
-`CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` paths without altering
-them; the defaults are `~/.claude/.credentials.json` and `~/.claude.json`.
-Conflicting environment auth overrides, Console/Gateway credentials, symlinks,
-unsafe file permissions, and unsupported legacy layouts are refused.
-
-The installed Claude Code **2.1.296** implementation was inspected to identify
-these fields, credential-change detection, and its shared write locks. A switch
-uses the same short-lived mkdir locks, never steals an existing lock, checks for
-concurrent edits, and atomically replaces each file. The two files cannot be
-replaced as one filesystem transaction: a failed second write triggers rollback
-of only the auth fields. Locks and temporary files are removed on normal completion
-or handled errors. Hard termination can leave a lock or partial switch; an
-encrypted undo record is written before changing either auth file.
-
-**Independent Claude enrollments transfer renewal ownership.** A switch hands
-the complete matching grant to Claude Code and permanently disables QuotaHop
-renewal for it first. `--dry-run` changes neither ownership nor provider files.
-Restoring an undo record never transfers renewal ownership back to QuotaHop.
-
-**Captured logins are access-token-only.** The target receives no refresh token;
-the previous account's refresh token is never mixed with a different access token.
-The selected login lasts only until its captured token expires or is revoked.
-Recapture after your usual sign-in when necessary. New captures retain the
-source's scope list; old captures without scope metadata use the minimal local
-`user:inference` / `user:profile` labels, without changing the server-side grant.
-No captured Claude token is renewed by this utility. Existing sessions may detect the shared
-credential change, but immediate adoption by every running session is not
-guaranteed; a session may need reopening. Design credentials are preserved, not
-re-authenticated or revoked.
-
-The last pre-switch Claude auth fields are saved in the separate encrypted
-`.usage-data/switch-backup.json`, using the vault key. This recovery record includes
-the outgoing Claude refresh token when present, solely for restoration. It never
-contains Design or MCP credentials. `--undo-switch` makes no network request and
-restores only those two fields; it refuses if a subsequent login has changed the
-selected access token. Restored credentials may be stale if another session has
-renewed or revoked them. A successful undo deletes the recovery record; another
-switch replaces it. Normal usage reports never read this record or modify global
-auth. The switch does not revoke any token server-side.
-
-## Selected accounts and readiness
-
-The combined table highlights **▶ SELECTED** in cyan and includes a small key.
-**○ Standby** marks other captured logins when the selected login is identified;
-**? Unknown** means selection cannot be established safely. Detection compares
-the saved access token with read-only CLI credentials before and after fetching
-usage. Codex also requires the workspace routing ID to match. Same-email Max
-and Team rows cannot both match. Muse's current-CLI row follows that login;
-portal sessions are not assumed to be the selected CLI account.
-
-This identifies the CLI's current credential files, **not the account cached by
-every already-running process**. Unknown credentials, environment overrides,
-rotation, or a login change during the check produce an unknown marker. No
-extra network calls or provider-auth writes are needed for these badges.
-
-The **Switch** column shows Claude readiness and the saved access token's
-remaining lifetime. `✓ Ready` means live reported headroom and a token with more
-than a minute left; the switch still validates the profile immediately before
-writing. Expired tokens, unknown expiry, missing scope, unavailable usage, and
-exhausted allowances are distinct states. Codex and Muse show `—` here because
-this tool switches only Claude.
-
-## Refresh saved copies, on demand
-
-```sh
-./claude-usage --refresh
-./claude-usage --refresh --verbose
-```
-
-This is **credential synchronization and a readiness check, not OAuth token
-renewal**. Run it while your captured Claude tokens are still valid to establish
-server-verified account UUID + organization UUID bindings in the encrypted vault.
-It uses the same allowlisted profile GET as switching, then fetches usage once
-for each configured account. Each unbound eligible Claude token gets at most
-one profile check; no token-renewal endpoint is allowed.
-
-When Claude Code has already renewed its current access token, `--refresh` can
-copy that newer token into the matching saved account. A changed token requires
-one profile GET, an exact saved account/organization/plan match, a later expiry,
-and a stable source-file reread. It never guesses from email, copies a refresh
-token, or changes provider files. Only this tool's encrypted vault is updated.
-After a binding exists, `--switch-next` performs the same synchronization before
-ranking. Its `--dry-run` skips synchronization writes. Ordinary reports remain
-read-only and never rewrite saved credentials.
-
-**Inactive expired subscriptions cannot be kept ready indefinitely with the
-credentials currently captured.** They contain no independently owned renewable
-grant. This tool never runs a warm-up prompt or rotates a copied refresh token.
-If no newer matching credential exists in the current Claude CLI file, recapture
-after your normal sign-in. An expired account without an earlier verified binding
-also requires explicit recapture. Codex still uses explicit recapture; Muse's
-current-CLI source reads the current login on every invocation. No scheduler,
-daemon, login process, or automatic polling is installed.
-
-The normal `--refresh` output remains the table and key. `--verbose` explains
-synchronization outcomes; `--json` includes `credential_sync` and the explicit
-`oauth_renewal: false` flag. Research into other tools and the reasons for this
-boundary are in [the refresh assessment](RESEARCH.md#refresh-and-switcher-assessment-2026-10-13).
-
-Claude reads only `oauthAccount` display fields from its local `.claude.json`
-metadata during capture and checks that the selected access token did not
-change during the read. Codex extracts display fields from its existing access
-token's profile claims; it does not copy ID/refresh tokens. These are **local
-display hints, not independently verified identities**. They do not change
-authentication or network routing, and Claude metadata can be stale. No profile
-request, login, refresh, or CLI invocation is added for naming.
-
-Old captures remain compatible. Codex names can be decoded from saved access
-tokens immediately. An old Claude capture can be labeled from current local
-metadata only when its saved token exactly matches the current token; otherwise
-recapture that account once while it is current. Legacy IDs still work for this
-one-time migration, e.g. `--capture team-1`, and stay internal storage IDs. Names
-and emails appear in terminal/JSON output and the private configuration; tokens
-remain encrypted. Reports do not rewrite the vault or configuration.
-
-## Muse Code — current CLI login, no setup
-
-To include the current Muse CLI login in the combined report, first run
-`./claude-usage --add muse-current --plan muse_code --name Muse`. Then add
-`"source": "cli_current"` to that row in `.usage-data/accounts.json`, preserving
-its private permissions. The configuration contains labels, never credentials.
-Run:
-
-```sh
-./claude-usage
-./claude-usage --json
-```
-
-The configured row uses your current Muse CLI login and shows the email/name returned
-by Meta; switching your Muse login changes the account
-this row reports. No Muse cookie or capture is needed. Saved Claude/Codex
-credentials require their vault passphrase once per five-minute unlock period.
-
-To check only Muse:
-
-```sh
-./claude-usage --muse-cli-current
-./claude-usage --muse-cli-current --json
-```
-
-This explicitly selected action checks **only your current Muse CLI account**.
-It works without browser cookies, a vault passphrase, or account configuration.
-It reads `$XDG_CONFIG_HOME/muse/auth.json` (normally `~/.config/muse/auth.json`)
-with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOATIME`. It neither invokes the
-Muse launcher nor writes to any authentication files. Switching your Muse
-login through your own workflow changes which account this action reports.
-
-**This route is a bootstrap POST, not a documented read-only usage API.** The
-installed CLI obtains subscription quota from `POST https://api.meta.ai/muse-code/key`.
-The checker sends exactly one request with `{"onboard":false}`, using the
-existing device access token. It requires an already provisioned API key and
-checks that Meta returned that same key, then discards the returned credentials.
-No login, refresh, onboarding, inference, redirects, or retries are attempted.
-The current live verification returned the same key and left source contents
-and timestamps unchanged. This is evidence of observed key reuse, **not a
-guarantee about future server-side key behavior**; detecting a changed key
-cannot undo a server-side change. Keep using the default GET-only portal route
-if a strictly read-only endpoint contract is required. The bootstrap route is
-selected only by `--muse-cli-current` or a Muse account's explicit
-`"source": "cli_current"` setting; it is never a fallback. Only one configured
-row may use the current login. Removing `source` restores portal capture for
-that row. A configured CLI source takes precedence over saved portal credentials
-and snapshots, including on failure.
-
-Only quota, plan, and sanitized email/name fields enter the report; keys, billing
-details and action URLs from the bootstrap response are discarded. The current CLI
-login is the account binding; session token counts are not subscription quota.
-If Meta omits `subs_usage`, the tool reports `usage_unavailable`, not 0%. It
-never runs a model turn to make usage appear. It does not save credentials or
-turn this current-login check into a persistent account capture.
-Reported Muse percentages above 100% are preserved as overage, not rejected
-or clamped. Negative and non-finite values remain invalid.
-
-## Codex setup
-
-While the desired ChatGPT subscription is your current Codex account:
-
-```sh
-./claude-usage --capture codex
-./claude-usage
-```
-
-Capture reads `$CODEX_HOME/auth.json` if that variable already exists, otherwise
-`~/.codex/auth.json`. It saves only `tokens.access_token`, its expiry when present,
-and `tokens.account_id`, plus display identity when available, in the encrypted
-vault. It never runs Codex, reads Codex's keyring, copies refresh/ID tokens, or renews authentication. API-key-only and
-keyring-only logins are unsupported. `--credential-file /path/to/auth.json` can
-select an existing private file without changing Codex configuration.
-
-The report requests `GET https://chatgpt.com/backend-api/wham/usage` with the saved
-access token and account-routing ID. It shows server-reported plan, 5h/weekly
-usage and resets, additional model/code-review allowances, and credit balances
-when returned. Windows of other lengths are displayed separately, never
-mislabeled as five-hour or weekly quotas. API token counts are not quota usage.
-
-Capture additional accounts by switching normally, then repeating:
-
-```sh
-./claude-usage --capture codex
-```
-
-On a fresh installation, run `--setup` first; named capture adds a row as needed.
-Saved access tokens remain usable only until expiry or revocation. Capturing a
-token does not create an independent server-side login; no refresh-token sharing
-or rotation is attempted.
-
-## Muse Code setup — real portal subscription quota
-
-The checker reads the same subscription-quota GET used by Meta's `dev.meta.ai`
-frontend. It uses a **browser portal session**, separate from your Muse CLI
-authentication. This portal route never opens `~/.config/muse/auth.json`, invokes Muse, mints an
-API key, or refreshes any login.
-
-1. Sign into **https://dev.meta.ai/usage** in your browser with the desired account.
-2. Open Developer Tools → **Application** (Chrome) or **Storage** (Firefox) →
-   **Cookies** → `https://dev.meta.ai`. Copy the **value only** of `llama_dev_sess`.
-   Do not copy the whole Cookie header or a cURL command. Do not send it in chat.
-3. Run:
-
-```sh
-./claude-usage --capture muse
-```
-
-This creates or updates a named portal account. To reuse the existing `muse-1`
-row instead of adding a portal row alongside the CLI row, remove its
-`source: cli_current` setting first. Paste the cookie into the **hidden terminal prompt**. The checker reads your
-portal identity and available teams, asks you to explicitly select a team ID
-(even if only one is listed), and checks that team's subscription quota. It then
-encrypts the session cookie and account/team binding in the existing private
-vault. This setup performs three GETs; no credential exchange is performed.
-
-Run the usual report:
-
-```sh
-./claude-usage
-./claude-usage --json
-```
-
-Each later Muse check verifies the saved portal identity and reads the selected
-team's quota once. The browser cookie is reusable until it expires or is revoked;
-the browser does not need to remain open. Re-run capture if it expires. No cookie
-jar, `Set-Cookie` updates, automatic sign-in or renewal are used.
-
-Additional subscriptions:
-
-```sh
-./claude-usage --capture 'second@example.com' --plan muse_code
-```
-
-Use that account's browser session and choose its team. An optional non-secret
-`--muse-team TEAM_ID` supplies the explicit team choice during capture; it must
-still be present in the returned team list. Credentials are never arguments.
-
-The result is **live subscription quota for your selected Meta portal team**,
-not PAYG API spending. Five-hour and weekly percentages come from reported
-weighted usage divided by the corresponding limits; resets use local time.
-Other window durations are shown separately. Missing, zero-denominator, or
-stale nonzero usage remains unknown, never fabricated zero. Reported overage is
-not clamped away. The portal does not prove its link to a particular Muse CLI
-login: the team name and this limitation appear in the terminal and JSON
-(`quota_scope: selected_meta_portal_team`, `cli_account_verified: false`).
-
-This is an **undocumented web interface**, not a promised public Meta API.
-Authentication failures, schema changes and redirects produce safe errors;
-there is no fallback to `/muse-code/key`, inference or a different team.
-Fresh live access has not yet been tested with your account because no usable
-portal session was available during development.
-
-Historical MSP exports remain optional. If you already have a `usage/read`
-result with `usage.observedAtMs`, `tier`, `window`, and/or `weekly`:
-
-```sh
-./claude-usage --import-muse muse-1 < existing-usage-result.json
-```
-
-Imported numbers show **SNAPSHOT** with their original observation timestamp;
-they never count as live. A saved live credential always takes precedence and
-its errors never silently fall back to the historical export.
-
-## Your shared Claude configuration
-
-If your Claude sessions share one credential file, that file contains the
-current login, not seven independent account credentials. The checker therefore
-captures the **access token only** for each account into its own encrypted vault.
-Capture never saves or uses a refresh token, and never changes the source
-credentials. Only an explicit switch stores the outgoing auth in its encrypted
-undo record, as described above; it never sends a refresh request.
-
-As you switch accounts using your normal workflow, capture each account **while
-that account is current**, using the appropriate plan:
-
-```sh
-./claude-usage --capture claude --plan max_20x
-./claude-usage --capture claude --plan team_premium
-```
-
-The first capture asks you to create a local vault passphrase (12+ characters).
-Later captures and reports reuse the unlock for **five minutes** after a
-successful password entry. Running another command does not extend that period.
-After it expires, the next command needing the vault asks again. This unlocks
-local storage; it does not sign in to Claude. Never send the passphrase or tokens
-in chat, command arguments, or configuration. Duplicate captured tokens are refused.
-Account labels are your responsibility: the checker does not verify identity by
-making additional profile calls.
-
-To forget the cached unlock immediately:
-
-```sh
-./claude-usage --lock
-```
-
-The cache uses Ubuntu's Linux user keyring (`libkeyutils.so.1`), with a
-kernel-enforced 300-second expiry and owner-only permissions. Only the derived
-vault encryption key is cached, never your password. Nothing is written to disk
-for the cache, and no daemon or cleanup process runs. It is shared across your
-commands/terminals under the same Linux user. Other processes running as you
-can use the unlock during those five minutes. Each vault has its own cache entry;
-`--lock` first stops any explicitly started renewal worker for this vault, then
-clears only this vault's cache entry, never another application's keys. If the OS keyring is unavailable, the tool asks again next time and never
-falls back to plaintext storage. `--verbose` includes the cache-unavailable notice.
-
-The default source is `$CLAUDE_CONFIG_DIR/.credentials.json` if that environment
-variable is already set; otherwise it is `~/.claude/.credentials.json`. A custom
-source can be selected without changing any environment or shell configuration:
-
-```sh
-./claude-usage --capture 'you@example.com' --plan max_20x --credential-file /your/config/.credentials.json
-```
-
-**Captured tokens are reusable only while valid.** They may expire or be
-invalidated by your subsequent account switches. Access-only capture cannot keep those logins alive. Use independent
-enrollment (described above) for renewable credentials. On an expired-token error, capture that account
-again after your next normal login to it. It never initiates that login or tries
-to refresh a saved token. If switching accounts immediately invalidates previous
-tokens, this method cannot provide simultaneous live readings for those accounts.
+QuotaHop reports **Claude, Codex, and Muse Code subscription quotas** in one
+terminal table and, on request, switches the shared Claude Code login to the
+subscription with the most room. Reports fetch each account once and exit. An
+optional background worker keeps independently held logins renewed. Nothing
+runs inference.
+
+See the [README](README.md#quick-start) for installation and first captures.
+`./quotahop` is the command; it uses the project's `.venv` automatically.
+Run `./quotahop --help` for every option.
+
+Contents: [reports](#check-usage) · [panel](#side-panel) · [capture](#capture-by-account-identity) ·
+[vault and unlock cache](#vault-and-unlock-cache) · [Codex](#codex-setup) ·
+[Muse](#muse-code--current-cli-login-no-setup) · [selection and readiness](#selected-accounts-and-readiness) ·
+[switching](#switch-the-shared-claude-code-subscription) · [refresh](#refresh-saved-copies-on-demand) ·
+[background renewal](#optional-background-authentication-renewal) · [data and files](#data-directory-and-files) ·
+[security](#security-and-verification)
 
 ## Check usage
 
 ```sh
-./claude-usage
-./claude-usage --sort 7d --reverse
-./claude-usage --verbose
-./claude-usage --json
+./quotahop
+./quotahop --sort 7d --reverse
+./quotahop --verbose
+./quotahop --json
 ```
 
-To set up a fresh copy on Ubuntu with Python 3.12+:
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-./claude-usage --setup
-```
-
-Identity labels take precedence over configured fallback names. Keep the stable IDs;
-plans are `max_20x`, `team_premium`, `codex`, and `muse_code`. Names are configured
-labels; Claude plans remain unverified, while Codex can return its plan. Team
-seats each require their own captured access token;
-a Team organization ID or owner login is not a substitute.
-
-The default output is just the table, split into **OpenAI**, **Anthropic**, and
-**Meta** sections. Empty provider sections are omitted. Accounts are sorted by
+The default output is the table, split into **OpenAI**, **Anthropic**, and
+**Meta** sections; empty sections are omitted. Accounts are sorted by
 recommended next use within each section. Each row shows five-hour and weekly
 percentages, local reset timestamps with countdowns, and account status.
-Use `--verbose` (or `-v`) for notices, error explanations, observation times,
-model-specific windows, and extra usage. JSON always includes the full details.
-Vault unlock prompts and fatal command errors still appear when necessary.
-Absent metrics remain unknown, never zero. Extra-usage monetary values
-remain raw units because their currency/scale is not a verified API contract.
+`--verbose` (`-v`) adds notices, error explanations, observation times,
+model-specific windows, and extra usage. JSON always includes full details.
+Absent metrics remain unknown, never zero. Extra-usage monetary values remain
+raw units because their currency/scale is not a verified API contract.
 
-Provider sections use rounded borders, `↻` reset labels, and status glyphs:
-`● LIVE`, `✕ ERROR`, `◷ SNAPSHOT`, and `○ NOT_CONFIGURED`. On a colour terminal,
-usage below 50% is green, 50–79% amber, and 80% or higher red; unknown values are
-muted. These thresholds are visual cues, not provider limit rules. Labels and
-numbers remain readable without colour. Colour defaults to automatic and respects
+The report adapts to terminal width: full columns where they fit, compact
+usage/reset columns otherwise, and stacked rows below 76 columns. Names wrap
+without truncation. Compact resets show time remaining; `--verbose` includes
+exact local timestamps.
+
+Status glyphs are `● LIVE`, `◷ RECENT`, `✕ ERROR`, `◷ SNAPSHOT`, and
+`○ NOT_CONFIGURED`. `● LIVE ✓` additionally marks a Claude switching candidate;
+the checkmark is not a renewal indicator (use `--background status`).
+`◷ RECENT` is a successful Claude check reused for up to 60 seconds. On a colour
+terminal, usage below 50% is green, 50–79% amber, and 80% or higher red; unknown
+values are muted. These are visual cues, not provider limit rules. Colour follows
 `NO_COLOR`, `TERM=dumb`, and redirected output; override with `--color always` or
-`--color never`. JSON never includes colour escapes. Glyphs need a Unicode-capable
-terminal; actual font ligatures are controlled by your terminal's font settings.
+`--color never`. JSON never includes colour escapes.
+
+### Error labels
+
+A failed check is never shown as zero usage or exhausted quota. Labels:
+
+| Label | Meaning |
+|---|---|
+| `EXPIRED` (`token_expired`) | The saved access token has expired. A grant QuotaHop maintains recovers on its own once the worker runs; otherwise recapture or re-enroll (see [renewal](#optional-background-authentication-renewal)). |
+| `THROTTLED` | HTTP 429 from the usage endpoint. Quota is unknown, not exhausted. A shared cooldown honours `Retry-After` (five-minute minimum, one-day maximum). |
+| `AUTH ERROR`, `BAD TOKEN` | The provider rejected the credential, or it is malformed. |
+| `WRONG ACCOUNT`, `WRONG PROVIDER`, `DUPLICATE` | The credential does not match the saved row, belongs to another provider, or duplicates another saved token. |
+| `TIMEOUT`, `NETWORK`, `TLS ERROR`, `HTTP ERROR`, `BAD DATA`, `REDIRECTED`, `BLOCKED`, `CACHE ERROR`, `CHECK FAILED`, `CHECKING` | Transport, response-format, allowlist, cache or worker problems. `--verbose` explains. |
+
+JSON adds `error_code` and, for HTTP 429, `retry_after_seconds`.
+
+### Ranking
 
 The default `--sort recommended` balances spare capacity and reset urgency:
 
@@ -678,155 +75,738 @@ The default `--sort recommended` balances spare capacity and reset urgency:
 - A missing window is ignored, so a subscription with only a weekly limit can
   still rank normally. Live headroom with missing or elapsed reset times comes
   next, ordered by remaining capacity. Elapsed resets never imply a fresh allowance.
-- Accounts at or above 100% in either window come after usable accounts. They
-  sort by when all exhausted windows are due to reset, where known.
+- Accounts at or above 100% in either window come after usable accounts,
+  sorted by when all exhausted windows are due to reset, where known.
 - Errors, unconfigured accounts, historical snapshots, and accounts with no
   reported main-window usage come last.
 
 This is a practical heuristic: percentages are relative to each subscription,
-not comparable token counts. Model-specific allowances remain in `--verbose`;
-without knowing which model you will use, they do not affect this ordering.
+not comparable token counts. Model-specific allowances remain in `--verbose`.
 
 Override with `--sort name`, `plan`, `5h`, `7d`, `5h-reset`, `7d-reset`, or `status`.
 These sort ascending; add `--reverse` for descending. Usage sorts numerically,
-resets chronologically, and missing values stay last. With `recommended`, reverse
-changes the order within each availability tier, keeping usable accounts first.
-Sorting also orders the JSON accounts array within provider groups. Each command
-still fetches usage once and exits; sorting adds no network requests.
+resets chronologically, and missing values stay last. With `recommended`,
+reverse changes the order within each availability tier, keeping usable accounts
+first. Sorting also orders the JSON accounts array within provider groups and adds
+no network requests.
+
+### What a report does and does not do
+
+Reports **never run inference or login and never renew a token themselves.**
+Claude and Codex use at most one usage GET each (Claude can reuse a recent
+check); Muse portal sources use one identity GET and one quota GET for the
+selected team. These are first-party interfaces, not documented public HTTP
+APIs or guaranteed integrations; see [research](RESEARCH.md).
+
+Two side effects exist, both local and bounded:
+
+- After a successful unlock, a report **restarts a stopped renewal worker** if
+  grants need maintenance, unless you stopped it explicitly with
+  `--background stop` or `--lock` (see [renewal lifecycle](#renewal-after-reboot)).
+- For Claude grants that Claude Code currently holds (`cli_owned`), a report
+  copies Claude Code's already-renewed access token into the encrypted vault.
+  This uses read-only file reads of Claude Code's credentials and at most one
+  profile GET, and requires an exact saved account/organisation match.
+
+Provider authentication files are otherwise untouched. Only the explicit
+`--switch`, `--switch-next` and `--undo-switch` actions change Claude Code's
+auth, as [described below](#switch-the-shared-claude-code-subscription).
+
+### Concurrency and shared cache
 
 Independent account checks run concurrently using up to four short-lived Linux
-worker processes. This overlaps network waits without adding requests. Claude
-checks share a private 60-second cache and per-account request locks; a cache hit
-never crosses a reset boundary or credential change. Use `--jobs 1` for sequential checks, or `--jobs 2` through
-`--jobs 8` to choose the concurrency limit. Duplicate credentials stay in the
+worker processes (`--jobs 1` for sequential, `--jobs 2`–`8` to choose). This
+overlaps network waits without adding requests. Duplicate credentials stay in the
 same worker so they cannot trigger duplicate usage requests. Unconfigured rows
-and snapshots are handled locally without workers.
+and snapshots are handled locally. Workers run only while the command is active
+and are reaped before exit, including after timeout, Ctrl-C, termination, or a
+partial startup failure; parent-death signals stop them if the parent is killed.
+The eight-second per-request deadline applies, and an outer 18-second deadline
+bounds the two-request Muse portal check.
 
-Workers run only while the command is active. Every worker is reaped before
-exit, including after timeout, Ctrl-C, termination, or a partial startup failure.
-Linux parent-death signals stop workers if the parent is forcibly killed. The
-existing eight-second per-request deadline still applies; an outer 18-second
-worker deadline also bounds the two-request Muse portal check. No login, token
-refresh, daemon, or scheduled activity is added. A simulated eight-account
-benchmark with 200 ms responses took 1.60 s sequentially and 0.43 s with four
-workers; real speedup depends on server latency.
+Claude reports, panels and switches share a private 60-second usage cache with
+per-account request locks. Cache hits keep the original check time, expire at
+reset boundaries, and never survive a credential change. HTTP 429 starts a shared
+cooldown. No retries or token refreshes are triggered. `--switch-next` after a
+report therefore does not query every account again.
 
-Remove an entry by its saved email, name, or stable ID:
+### JSON and exit codes
+
+JSON includes each account's `status`, `live`, nullable `usage`, `captured_at`,
+and safe errors. Top-level `live` is true only when all accounts returned live
+data; `live_accounts` counts successful ones. Errors never fall back to a saved
+snapshot or an old cached reading. Cache hits use `status: "recent"`,
+`live: false` and the original `captured_at`; they remain switching candidates
+only while under 60 seconds old. JSON stdout contains no prompts; the passphrase
+prompt uses the terminal. A valid cached unlock works without a terminal; once it
+expires a terminal is required (there is no echoed-password fallback).
+
+Exit codes: `0` success; `1` retrieval/restart error; `2` input/vault error;
+`3` unconfigured/unsupported accounts; `130` interrupted. Historical snapshots
+can exit 0, so scripts should inspect `live`, not just the exit status.
+
+### Removing accounts
 
 ```sh
-./claude-usage --remove 'you@example.com'
-./claude-usage --remove 'you@example.com' --plan codex
-./claude-usage --remove muse-1
+./quotahop --remove 'you@example.com'
+./quotahop --remove 'you@example.com' --plan codex
+./quotahop --remove muse-1
 ```
 
-Removal deletes the entry from this tool's configuration, its copied credential
-from the encrypted vault, and any imported snapshot. It never contacts a provider
-or reads or changes the provider's login files. A vault unlock may be required.
-Ambiguous names/emails are rejected; use `--plan` or the unique `id` from `--json`.
-For a current Muse CLI row, use its configured name or ID (`muse-1`), since its
-live email is not saved. You can remove all entries and add/capture new ones later.
+Removal deletes the entry from configuration, its saved credential and renewal
+grant from the encrypted stores, and any imported snapshot. It never contacts a
+provider or changes provider login files. A vault unlock may be required.
+Ambiguous names/emails are rejected; use `--plan` or the unique `id` from
+`--json`. For a current-Muse-CLI row use its configured name or ID, since its
+live email is not saved.
 
-JSON includes each account's `status`, `live`, nullable `usage`, `captured_at`, and
-safe errors. Top-level `live` is true only when all accounts returned live data;
-`live_accounts` counts successful live accounts. Errors never silently fall back
-to a saved snapshot or an old cached reading. Cache hits use `status: "recent"`,
-`live: false`, and the original `captured_at`; they remain switching candidates
-only while less than 60 seconds old. HTTP 429 errors include `retry_after_seconds`.
-JSON stdout contains no prompts; the passphrase prompt uses
-the terminal. A valid cached unlock also works without a terminal. Once it
-expires, a terminal is required again; there is no echoed password-input fallback.
+Identity labels take precedence over configured fallback names. Plans are
+`max_20x`, `team_premium`, `codex`, and `muse_code`. Claude plan labels are
+unverified; Codex returns its plan. Team seats each require their own
+credentials; a Team organisation ID or owner login is not a substitute. Historical
+snapshots from earlier versions remain available with `--import ACCOUNT_ID`;
+they show `SNAPSHOT` and never count as live.
 
-Exit codes: `0` successful action/report; `1` any account retrieval error;
-`2` configuration/vault/input error; `3` uncaptured/unsupported accounts; `130` interruption.
-Manual historical snapshot support from the initial version remains available
-through `--import ACCOUNT_ID`; snapshots are labeled `SNAPSHOT` and never count
-as live. Scripts should inspect `live`, not just exit status.
+## Side panel
+
+```sh
+./quotahop --panel                  # any interactive terminal
+./quotahop --panel --panel-interval 120
+```
+
+The compact panel (or the [Herdr plugin](plugins/herdr/README.md)) refreshes
+every 60 seconds while it is running in the foreground (`--panel-interval`
+30–3600 seconds), keeps its own unlock key in memory, and closes with `q`. `u`
+unlocks using the normal cache or passphrase; **unlocking can restart a stopped
+renewal worker**, which then outlives the panel (unless stopped explicitly).
+`--lock` also locks open panels for the same vault. ↑/↓ selects a provider;
+Enter previews the Next account and a second Enter confirms a Claude switch;
+Esc cancels. Codex and Muse switching is unavailable. `d` toggles full details.
+
+Per provider the panel shows **Active** (the subscription matching the current
+CLI credentials) and **Next** (the best usable alternative, using the CLI
+ranking), with five-hour and weekly remaining percentages. Codex rows are
+matched by ChatGPT account ID; Claude rows by access token.
+
+| Label | Meaning |
+|---|---|
+| `Active` | Verified against the current CLI credentials. Shows `Unverified` if it cannot be. |
+| `Next` | Best verified alternative; for Claude it must also be ready to switch. |
+| `Saved?` | The only saved account's quota, shown without claiming it is the active login. |
+| `Best?` | Active cannot be verified; the best saved candidate's quota is shown and switching stays blocked. |
+| `~` after a label | The reading is a reused cached check (at most 60 s old). |
+
+When no alternative is usable, the Next line says why:
+
+| Text | Meaning |
+|---|---|
+| `No other sub` | Only one subscription is saved for this provider. |
+| `All N expired · re-enroll` | Every alternative's token expired and nothing is renewing them. |
+| `Expired · renewing` | Alternatives are expired but a maintained grant is due to renew. |
+| `Expired · renewal paused` | Renewal is `blocked` (unverified Claude build or missing tool). |
+| `Throttled · quota unknown` | An alternative's usage check returned HTTP 429. |
+| `Check failed · quota unknown` | An alternative's check failed for another reason. |
+| `N expired · rest unusable` | Some alternatives expired and the rest cannot be used. |
+| `At quota limit` | Every alternative is exhausted. |
+| `Usage/auth unverified` | Usage or credentials could not be verified; nothing is claimed. |
+
+Warnings at the foot of the summary:
+
+| Warning | Meaning |
+|---|---|
+| `! Renewal off: quotahop --background start` | The worker is not running. |
+| `! Renewal paused (n): unverified Claude build` | n grants are `blocked`; see [builds](#native-builds-and-sandbox). |
+| `! Renewal stopped (n): re-enroll` | n grants are `suspended`; see [recovery](#recovery-and-re-enrollment). |
+| `! CLI sync: …` | Following Claude Code's renewed token failed for a reason that will not resolve itself. |
+
+## Capture by account identity
+
+While the desired account is signed in through your normal workflow:
+
+```sh
+./quotahop --capture claude --plan team_premium
+./quotahop --capture claude --plan max_20x
+./quotahop --capture codex
+```
+
+Run the appropriate command for the current account, then switch normally before
+capturing a different one. The capture detects its email/name, prints which
+account was saved, and reuses its existing row or an empty matching template
+slot (`--setup` creates seven Claude template slots; unknown slots keep
+placeholders). You do not need to remember `team-1`, `max-2`, etc. Repeated
+captures of the same identified account and subscription type update that row.
+Distinct Codex workspace routing IDs are never merged just because they share
+an email.
+
+**Personal Max and a Team seat can share the same email.** Capture each while
+that subscription is the current Claude login, specifying its plan:
+
+```sh
+./quotahop --capture 'you@example.com' --plan max_20x
+# Switch to your Team subscription using your normal login workflow, then:
+./quotahop --capture 'you@example.com' --plan team_premium
+```
+
+These create separate rows with separate copied access tokens. Recapture with the
+same `--plan` to update only that subscription. An email shared by both rows
+requires `--plan` or a unique saved ID. The same token cannot be captured as two
+subscriptions. If an earlier capture overwrote one, recapture each subscription;
+a replaced token cannot be recovered.
+
+You can also select a saved account by email/name, or supply one for a new account:
+
+```sh
+./quotahop --capture 'you@example.com'
+./quotahop --capture 'you@example.com' --plan team_premium
+./quotahop --capture 'Work account' --plan codex
+```
+
+For a new email/name, specify `--plan`. If local identity is available, its email
+takes precedence over a supplied display name; a supplied email that disagrees
+is refused. If identity is missing, your supplied name/email is used as the
+label, or use `--name 'Work account'` with a provider selector. Plan labels for
+Claude remain user-supplied. Ambiguity within the same plan requires a unique
+saved ID. Capturing by an existing ID cannot change its subscription type.
+
+**Captures copy access tokens only.** A capture never saves or uses a refresh
+token, never runs the provider CLI, and never changes the source credentials.
+Captured tokens are reusable only while valid; they can expire or be invalidated
+by later account switches. On an expired-token error, capture that account again
+after your next normal login to it, or use
+[independent enrollment](#optional-background-authentication-renewal) for a
+renewable login. A Claude login that Claude Code holds can also become renewable
+without enrollment: see [adopting a CLI login](#claude-renewal-ownership).
+
+Claude reads only `oauthAccount` display fields from its local `.claude.json`
+during capture and checks that the selected access token did not change during
+the read. Codex extracts display fields from its existing access token's profile
+claims. These are **local display hints, not independently verified identities**;
+Claude metadata can be stale. No profile request, login, refresh, or CLI
+invocation is added for naming. Old captures remain compatible: Codex names can
+be decoded from saved tokens, and an old Claude capture is labelled from current
+metadata only when its saved token exactly matches the current one (otherwise
+recapture it once). Legacy IDs such as `--capture team-1` still work. Reports
+never rewrite the vault or configuration for naming.
+
+## Vault and unlock cache
+
+The first capture asks you to create a vault passphrase of at least 12
+characters; there is no default. Account secrets are encrypted with AES-256-GCM
+under a scrypt-derived key; the passphrase is never stored. Never put the
+passphrase or tokens in command arguments, configuration, chat, or screenshots.
+
+After a successful passphrase entry, later commands reuse the unlock for
+**five minutes** without extending it. It unlocks local storage; it does not sign
+in to any provider. The cache holds only the derived key (never the passphrase)
+in the Linux user keyring (`libkeyutils.so.1`) with a kernel-enforced 300-second
+expiry and owner-only permissions. Nothing is written to disk and no daemon runs.
+It is shared across your terminals under the same Linux user, so other processes
+running as you can use it during that time. Each vault has its own entry. If the
+keyring is unavailable the tool asks again next time and never falls back to
+plaintext; `--verbose` shows the notice.
+
+```sh
+./quotahop --lock                  # clear the cached unlock, lock open panels, stop the worker
+./quotahop --change-password       # alias: --reset-password
+```
+
+`--lock` stops this vault's renewal worker until `--background start`, signals
+open panels to clear their displays, and clears only this vault's cache entry.
+It does **not** remove a vault key stored by [autostart](#renewal-after-reboot);
+it prints a reminder. `--change-password` preserves accounts, credentials,
+renewable grants, and undo history; see the [README](README.md#change-the-vault-password)
+for recovery from an interrupted change and forgotten-password limits.
+
+The default Claude source is `$CLAUDE_CONFIG_DIR/.credentials.json` if that
+variable is set, otherwise `~/.claude/.credentials.json`. Capture another file
+read-only with `--credential-file /your/config/.credentials.json`.
+
+## Codex setup
+
+While the desired ChatGPT subscription is your current Codex account:
+
+```sh
+./quotahop --capture codex
+./quotahop
+```
+
+Capture reads `$CODEX_HOME/auth.json` if that variable is set, otherwise
+`~/.codex/auth.json`. It saves only `tokens.access_token`, its expiry when
+present, and `tokens.account_id`, plus display identity when available, in the
+encrypted vault. It never runs Codex, reads Codex's keyring, or copies
+refresh/ID tokens. API-key-only and keyring-only logins are unsupported.
+
+The report requests `GET https://chatgpt.com/backend-api/wham/usage` with the
+saved access token and account-routing ID, and shows the server-reported plan,
+five-hour/weekly usage and resets, additional model/code-review allowances, and
+credit balances when returned. Windows of other lengths are displayed separately,
+never mislabelled. API token counts are not quota usage. Capture more accounts
+by switching normally and repeating `--capture codex`. A capture is usable until
+expiry or revocation; for a renewable login use
+[independent enrollment](#optional-background-authentication-renewal).
+
+## Muse Code — current CLI login, no setup
+
+To include the current Muse CLI login in the combined report, run
+`./quotahop --add muse-current --plan muse_code --name Muse`, then add
+`"source": "cli_current"` to that row in `.usage-data/accounts.json`, preserving
+its private permissions. The configuration holds labels, never credentials. The
+row follows whichever Muse login is current. To check only Muse:
+
+```sh
+./quotahop --muse-cli-current
+./quotahop --muse-cli-current --json
+```
+
+This action needs no vault, passphrase, or configuration. It reads
+`$XDG_CONFIG_HOME/muse/auth.json` (normally `~/.config/muse/auth.json`) with
+`O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOATIME`, neither invokes the Muse
+launcher nor writes any authentication file.
+
+**This route is a bootstrap POST, not a documented read-only usage API.** The
+installed CLI obtains subscription quota from `POST https://api.meta.ai/muse-code/key`.
+The checker sends exactly one request with `{"onboard":false}` using the existing
+device access token, requires an already provisioned API key, checks that Meta
+returned that same key, and discards the returned credentials. No login,
+refresh, onboarding, inference, redirects, or retries are attempted. Key reuse
+was observed during verification ([research](RESEARCH.md#muse-code)), which is
+**not a guarantee about future server-side behaviour**; detecting a changed key
+cannot undo a server-side change. Use the GET-only portal route if a strictly
+read-only contract is required. The bootstrap route is selected only by
+`--muse-cli-current`, a row with `"source": "cli_current"`, or an enrolled Muse
+row; it is never a fallback. Only one row may use the current login. Removing
+`source` restores portal capture, and a configured CLI source takes precedence
+over saved portal credentials and snapshots, including on failure.
+
+Only quota, plan, and sanitised email/name fields enter the report; keys, billing
+details and action URLs are discarded. If Meta omits `subs_usage`, the tool
+reports `usage_unavailable`, not 0%. Reported percentages above 100% are kept as
+overage; negative and non-finite values are invalid. Session token counts are not
+subscription quota.
+
+## Muse Code setup — real portal subscription quota
+
+The checker can read the subscription-quota GET used by Meta's `dev.meta.ai`
+frontend, using a **browser portal session** separate from CLI authentication.
+This route never opens `~/.config/muse/auth.json`, invokes Muse, mints an API
+key, or refreshes any login. It has been exercised with mocked responses; a live
+authenticated result is not claimed here.
+
+1. Sign into **https://dev.meta.ai/usage** in your browser with the desired account.
+2. Open Developer Tools → **Application** (Chrome) or **Storage** (Firefox) →
+   **Cookies** → `https://dev.meta.ai`. Copy the **value only** of `llama_dev_sess`,
+   not the whole Cookie header or a cURL command.
+3. Run `./quotahop --capture muse` and paste the cookie into the **hidden prompt**.
+
+The checker reads your portal identity and available teams, asks you to select a
+team ID explicitly (even if only one is listed; `--muse-team TEAM_ID` supplies it
+non-interactively and must be in the returned list), checks that team's quota,
+and encrypts the cookie with its identity/team binding. Setup performs three
+GETs. To reuse the `muse-1` row instead of adding a portal row, remove its
+`source: cli_current` setting first. Add further subscriptions with
+`./quotahop --capture 'second@example.com' --plan muse_code`.
+
+Each later check verifies the saved identity and reads the selected team's quota
+once. The cookie is reusable until it expires or is revoked; re-run capture then.
+No cookie jar, `Set-Cookie` update, sign-in or renewal is used. The result is
+**live subscription quota for the selected portal team**, not PAYG API spending.
+Percentages come from reported weighted usage divided by limits; other window
+durations are shown separately; missing, zero-denominator or stale usage stays
+unknown; overage is not clamped. The portal does not prove its link to a Muse CLI
+login, so JSON carries `quota_scope: selected_meta_portal_team` and
+`cli_account_verified: false`. This is an **undocumented web interface**.
+Authentication failures, schema changes and redirects produce safe errors; there
+is no fallback to `/muse-code/key`, inference or another team.
+
+Historical exports remain optional: `./quotahop --import-muse muse-1 < usage-result.json`
+accepts a `usage/read` result with `usage.observedAtMs`, `tier`, `window` and/or
+`weekly`. Imports show **SNAPSHOT** with the original timestamp and never count
+as live. A saved live credential always takes precedence.
+
+## Selected accounts and readiness
+
+The combined table highlights **▶ SELECTED** in cyan and includes a small key.
+**○ Standby** marks other captured logins when the selected login is identified;
+**? Unknown** means selection cannot be established safely. Detection compares
+the saved credential with read-only CLI credentials before and after fetching
+usage: **Claude by exact access token, Codex by ChatGPT account ID** (an enrolled
+Codex login has its own tokens, so the account ID is its identity). Same-email Max
+and Team rows cannot both match. Muse's current-CLI row follows that login;
+portal sessions are not assumed to be the selected CLI account.
+
+This identifies the CLI's current credential files, **not the account cached by
+every already-running process**. Unknown credentials, environment overrides,
+rotation, or a login change during the check produce an unknown marker. These
+badges need no extra network calls or provider-auth writes.
+
+The **Switch** column shows Claude readiness and the saved access token's
+remaining lifetime. `✓ Ready` means live reported headroom and a token with more
+than a minute left; the switch still validates the profile immediately before
+writing. Expired, expiring, unknown-expiry, missing-scope, unavailable-usage,
+exhausted, and unverified-identity states are distinct. Codex and Muse show `—`
+because only Claude is switched.
+
+## Switch the shared Claude Code subscription
+
+```sh
+# Automatically choose and switch to the best usable Claude subscription:
+./quotahop --switch-next
+# Preview, or restrict the choice to Team seats:
+./quotahop --switch-next --dry-run
+./quotahop --switch-next --plan team_premium
+# Choose a specific subscription yourself:
+./quotahop --switch 'you@example.com' --plan max_20x
+./quotahop --switch team-1
+# Validate the target without changing Claude files:
+./quotahop --switch team-1 --dry-run
+# Restore the preceding local Claude Code authentication:
+./quotahop --undo-switch
+```
+
+`--switch-next` uses exactly the default table ranking. It checks each eligible
+Claude account once (bounded concurrency); Codex and Muse are not queried.
+Expired, nearly expired, missing-scope, exhausted, failed, and unknown-usage
+accounts cannot win, nor can snapshots. If nothing qualifies, or the winner is
+already selected, authentication stays untouched. The final profile check must
+still pass; it never silently switches to a different identity. `--sort` and
+`--reverse` are rejected.
+
+Switching is **Claude-only** and runs only when explicitly requested. It checks
+the saved token's expiry and makes one `GET` to
+`https://api.anthropic.com/api/oauth/profile` (the installed CLI's undocumented
+first-party profile endpoint, under its own exact GET-only allowlist) to validate
+the account and Max/Team organisation type. Wrong emails, mismatched plan types,
+ambiguous selections, and expired or nearly expired tokens are refused before
+anything changes.
+
+The only changed JSON values are `claudeAiOauth` in `.credentials.json` and
+`oauthAccount` in `.claude.json`. All surrounding bytes are preserved, including
+`designOauth`, `mcpOAuth`, settings, and caches, as are file modes and group
+ownership. No logout/login command, CLI process, inference, token refresh,
+environment change, or symlink is used. Existing `CLAUDE_CONFIG_DIR` and
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` are honoured without alteration (defaults
+`~/.claude/.credentials.json` and `~/.claude.json`). Conflicting environment auth
+overrides, Console/Gateway credentials, symlinks, unsafe permissions, and
+unsupported legacy layouts are refused.
+
+### Claude renewal ownership
+
+**Every Claude grant has exactly one renewal owner.**
+
+- **`ready`**: QuotaHop holds the grant and renews it in the background.
+- **`cli_owned`**: Claude Code holds it and renews it while it is the active
+  login. QuotaHop mirrors Claude Code's latest copy into the encrypted renewal
+  registry so it can take the grant back.
+
+`--switch`/`--switch-next` give the target's **full grant** to Claude Code
+(`cli_owned`). While the switch holds Claude Code's refresh locks
+(`.oauth_refresh.lock` in the Claude config directory and the legacy
+`<config dir>.lock`, e.g. `~/.claude.lock`; waited for up to 10 seconds, then the
+switch fails with `claude_refreshing` and changes nothing) plus
+`.storage-write.lock` and `.claude.json.lock` (which fail immediately if held),
+the outgoing login's latest copy is taken **back from Claude Code** and returned
+to QuotaHop's background renewal (`ready`). Claude Code re-reads its credentials
+under the refresh lock and adopts a changed file instead of refreshing, so
+running sessions move to the new login and never refresh the returned grant. No
+login is lost by switching, and sessions may need a moment to adopt the file.
+`--dry-run` changes neither ownership nor provider files. A failed switch is
+reconciled on the next sync.
+
+The worker keeps this true afterwards. It mirrors Claude Code's renewals of the
+active grant and, when the CLI login changes **outside QuotaHop** (for example
+`/login`), takes the previous account back and adopts the new login. This
+includes accounts you only captured and never enrolled, provided the login can be
+attributed by an exact token match or a server-verified account/organisation
+profile match against a saved binding (made by `--refresh` or an earlier
+switch). So **sign in once in Claude Code and QuotaHop keeps that login
+renewable.** `--capture` itself still copies access tokens only. If the current
+login cannot be attributed, nothing is taken back. `legacy_hold` grants (older
+ones with no ownership record) resume renewal once the CLI is confirmed to hold a
+different login.
+
+A target QuotaHop holds only as an **access-only capture** is installed without a
+refresh token (it lasts until that token expires or is revoked); after it
+expires, sign in through Claude Code and QuotaHop adopts the new login as above.
+
+### Undo
+
+The last pre-switch Claude auth fields are saved in the separate encrypted
+`.usage-data/switch-backup.json` before either file changes. It includes the
+outgoing refresh token when present, solely for restoration, and never contains
+Design or MCP credentials. `--undo-switch` makes no network request and restores
+only those two fields. It refuses if a later login changed the installed access
+token, and refuses if QuotaHop again holds the saved refresh token
+(`Use --switch ACCOUNT instead`): the record's copy goes stale once QuotaHop
+renews that grant. A successful undo deletes the record; another switch replaces
+it. Reports never read it. Nothing is revoked server-side.
+
+### File format, locks and failure handling
+
+The switch uses Claude Code's own short-lived mkdir locks, never steals one,
+checks for concurrent edits, and replaces each file atomically. The two files
+cannot be replaced as one transaction, so a failed second write rolls back only
+the auth fields. Locks and temporary files are removed on normal completion or
+handled errors; hard termination can leave a lock or partial switch, and the
+undo record is written before the first write. The file format and locks were
+inspected in Claude Code 2.1.296 and checked through 2.1.308. This is an
+implementation-dependent local switch, not an official switching API.
+
+## Refresh saved copies, on demand
+
+```sh
+./quotahop --refresh
+./quotahop --refresh --verbose
+```
+
+This is **credential synchronisation and a readiness check, not OAuth token
+renewal**. While your captured Claude tokens are still valid it establishes
+server-verified account UUID + organisation UUID bindings in the encrypted vault,
+using the same allowlisted profile GET as switching (at most one per unbound
+token) and then fetches usage once per account. No token-renewal endpoint is
+allowed.
+
+When Claude Code has already renewed its current access token, `--refresh` can
+copy it into the matching saved account. A changed token requires one profile GET,
+an exact saved account/organisation/plan match, a later expiry, and a stable
+source reread. It never guesses from email, copies a refresh token, or changes
+provider files. After a binding exists, `--switch-next` performs the same
+synchronisation before ranking (`--dry-run` skips its writes). Ordinary reports
+and the panel follow Claude Code's token the same way, only for grants
+Claude Code holds.
+
+Inactive expired captures cannot be kept ready by this: they contain no
+renewable grant, and the tool never runs a warm-up prompt or rotates a copied
+refresh token. If Claude Code's current file has no newer matching credential,
+recapture after your normal sign-in, or enroll the account. Codex captures need
+recapture; Muse's current-CLI source reads the current login each time.
+
+The output remains the table; `--verbose` explains synchronisation outcomes and
+`--json` includes `credential_sync` and `oauth_renewal: false`. See the
+[refresh assessment](RESEARCH.md#policy-and-compatibility-limits) for why this
+boundary exists.
+
+## Optional background authentication renewal
+
+**Claude and Codex:** grants QuotaHop holds are renewed automatically, five
+minutes before expiry. **Muse:** independent device sign-in, usage reporting, and
+background expiry tracking are supported; the installed Muse CLI can re-mint an
+API key but does not renew its device access token, and this tool does not
+substitute key re-minting. Muse reports `reauth_required` at expiry.
+
+Enroll each saved account once. Successful enrollment starts the worker:
+
+```sh
+./quotahop --auth-enroll 'you@example.com' --plan max_20x
+./quotahop --auth-enroll 'you@example.com' --plan team_premium
+./quotahop --auth-enroll 'you@example.com' --plan codex
+./quotahop --auth-enroll muse-1
+./quotahop --background status
+```
+
+`--plan` is optional when an email, name, or ID identifies exactly one saved
+subscription; for an email shared by Max and Team, give `--plan` or the unique ID
+(`--auth-enroll team-2`). An ambiguous match is rejected before any worker is
+stopped. For a new row use `--add ID --plan PLAN --name EMAIL` first. Claude uses
+its native browser/code sign-in; Codex and Muse display device sign-in
+instructions. Complete each with the intended account and organisation: existing
+email, workspace and organisation bindings must match, and same-email Max and
+Team subscriptions remain separate. An expired or revoked capture does not block
+a fresh sign-in, since enrollment never contacts the provider with the old token.
+For legacy Claude captures without an organisation binding, the new profile
+establishes it after email and plan checks; duplicate bound subscriptions are
+rejected.
+
+Enrollment signs in separately inside a sandbox and does not read Claude Code's
+or Codex's credential files. Enrolling Muse makes that row use its saved
+independent login even if it had followed `source: cli_current`. Muse enrollment
+uses its native key bootstrap with onboarding disabled; it is not read-only.
+
+Codex renewal uses its documented `account/read` RPC with `refreshToken: true`.
+Claude sends exactly one initialization control frame to an empty isolated native
+CLI and closes input: no user message, prompt, turn, tools, or session resume.
+Offline tests confirmed this saves the rotated grant without inference
+(`claude auth status` is unsuitable: it can exit before saving). After a Claude
+renewal QuotaHop makes no profile request; the existing account binding is kept.
+
+Renewal updates only this tool's encrypted renewal registry
+(`.usage-data/renewal.json`, a separate AES-GCM context under the vault key) and
+the access-token vault. The worker never polls quotas or switches global auth.
+For who owns a Claude grant after a switch or `/login`, see
+[Claude renewal ownership](#claude-renewal-ownership).
+
+### Renewal after reboot
+
+The worker holds the vault key **only in memory**, so a reboot or worker exit
+stops it. Any interactive unlock (a report, or `u` in the panel) restarts it if
+grants need maintenance, so logins that expired meanwhile recover within seconds
+(grants keep long-lived refresh tokens). The exception is an **explicit stop**:
+after `--background stop` or `--lock` the worker stays down, and unlocks and
+autostart leave it down, until `--background start` (or a successful
+`--auth-enroll`). No service, cron job or startup entry exists unless you opt in:
+
+```sh
+quotahop --background enable-autostart   # unlocks once (cache or passphrase)
+quotahop --background disable-autostart  # removes the stored key and login item
+```
+
+Autostart stores the derived vault key in your desktop login keyring (Secret
+Service, e.g. GNOME Keyring, unlocked by PAM at login) and writes
+`~/.config/autostart/quotahop-renewal.desktop`. The login item waits up to 60
+seconds for the keyring, **never prompts**, quietly does nothing when no key is
+available, and respects an explicit stop. It needs `jeepney` and `secretstorage`
+(in `requirements.txt`) and a running Secret Service. `--lock` does not remove
+the stored key (it prints a reminder); use `disable-autostart`. Password changes
+update the stored key.
+
+**Trade-off:** while you are logged in, any process running as you can read the
+key, and at rest it is protected by your login password through the keyring
+rather than by the vault passphrase. Processes running as you can already read
+Claude Code's and Codex's active logins in plaintext, and could modify a
+user-writable QuotaHop install to capture the passphrase, so the practical loss is
+small on a single-user machine with a strong login password. Avoid it with
+auto-login, an empty keyring password, or shared accounts.
+
+Other lifecycle rules: `--background status` and `stop` need no passphrase.
+Enrollment pauses an existing worker and restarts it afterwards, reusing its
+unlock even if sign-in outlasts the five-minute cache; a failed or cancelled
+sign-in restores a previously running worker (Ctrl-C cancels), and a first-time
+failure starts none. If startup fails after a successful sign-in, the CLI says the
+login was saved and exits 1; retry `--background start` without enrolling again.
+The worker stops by itself when no grants remain to maintain.
+
+### Status
+
+`--background status` (add `--json` for expiry and next-renewal times, never
+tokens) shows the last observation; a stopped worker does not renew.
+
+| State | Meaning |
+|---|---|
+| `ready` | QuotaHop holds the grant and renews it five minutes before expiry (Muse: expiry tracking). |
+| `blocked` | A `ready` grant is paused because no verified Claude build or required tool is available. The refresh token was never sent; retried every 10 minutes. |
+| `cli_owned` (mode `cli_renewal`) | Claude Code holds and renews it while active; QuotaHop mirrors it and takes it back when the CLI moves on. |
+| `legacy_hold` (mode `renewal_hold`) | An older grant with no ownership record, held until the CLI is confirmed to hold a different login. |
+| `in_flight` | A renewal request was sent and not yet recorded. An interrupted one becomes `suspended`. |
+| `suspended` | Renewal outcome uncertain. Never replayed automatically. |
+| `reauth_required` | A Muse device sign-in expired. |
+| `needs_enrollment` | No grant is saved for this row. |
+
+### Recovery and re-enrollment
+
+Re-enroll only for `suspended` or `reauth_required`, or when a refresh token is
+expired or revoked. **An `EXPIRED` access token on a maintained grant recovers on
+its own** once the worker runs; do not re-enroll for it.
+
+```sh
+./quotahop --background stop
+./quotahop --auth-forget 'you@example.com' --plan codex
+./quotahop --auth-enroll 'you@example.com' --plan codex
+```
+
+Forget deletes only the local renewable grant, retaining its last access token;
+it never logs out or revokes a provider session. `--remove` also deletes the
+grant. Capture refuses to overwrite an enrolled account until it is forgotten.
+
+Refreshes are serialised. An encrypted in-flight marker is saved before calling
+the provider, and rotated credentials are persisted before their access tokens
+are published. Any failed or interrupted refresh **suspends** that account;
+an uncertain rotation is never replayed.
+
+### Native builds and sandbox
+
+Enrollment and renewal need the relevant **native provider CLI** and
+**bubblewrap** (`sudo apt install bubblewrap`). Native authentication runs with a
+fresh home inside a filesystem/PID sandbox; your home, CLI credential stores,
+Design auth, keyrings, and shell configuration are not mounted, and only that
+subprocess sees the isolated `HOME`/`CODEX_HOME`. If isolation cannot be created
+the operation fails; there is no unsandboxed fallback.
+
+The behaviour of the no-prompt startup path was tested offline, and the
+executables are pinned by SHA-256: **Claude Code 2.1.296's Linux binary** and Muse
+1.4.6-R6000.1 (`isolated_auth.BUILDS`). Other builds, even of the same version,
+are refused until verified; a pin is never removed merely to support a newer
+binary. Muse updater wrappers are not executed. For Claude, QuotaHop looks for the
+pinned build in the `claude` on your PATH, sibling builds in Claude's versions
+directory, and a **retained copy** at
+`${XDG_DATA_HOME:-~/.local/share}/quotahop/claude-<hash16>` — a hard link (copy
+fallback) that QuotaHop keeps so that Claude Code pruning old versions cannot stop
+renewal. If no build verifies, renewal pauses as `blocked` and retries every 10
+minutes instead of suspending, because the refresh token was never sent. (The
+switch file format and locks were checked separately, through Claude Code
+2.1.308.)
+
+Renewable grants are encrypted in `.usage-data/renewal.json`. Native auth files
+exist briefly in a `0700` temporary directory as `0600` files and are removed on
+normal and error cleanup. A forced kill or power failure can leave that
+directory; no secure-erasure claim is made. The worker disables core dumps and
+process-memory inspection. Root or a compromised user account is outside the
+protection boundary.
+
+## Data directory and files
+
+`--data-dir DIR` selects the private storage directory (default `.usage-data`
+beside the checkout). It must be owned by you with mode `0700`, may not be inside
+a Claude/Codex/Muse/AWS/git directory, and is created only by `--setup`. The Herdr
+plugin and the autostart login item pass it explicitly.
+
+Inside it (`0600` files): `accounts.json` (labels and plans, no credentials),
+`vault.json` (encrypted access-token vault), `renewal.json` (encrypted grants),
+`renewal-status.json` and the stop/lock markers, `switch-backup.json` (encrypted
+undo record), imported snapshots, `quota-cache/` (parsed metrics only), and
+`vault-rekey.json` only during an interrupted password change.
+
+Outside it, QuotaHop may create:
+
+- the **retained Claude build** at `${XDG_DATA_HOME:-~/.local/share}/quotahop/claude-<hash16>`
+  (see [native builds](#native-builds-and-sandbox));
+- the autostart login item `${XDG_CONFIG_HOME:-~/.config}/autostart/quotahop-renewal.desktop`
+  and a vault-key item in the login keyring, only after `--background enable-autostart`;
+- Claude Code's two auth fields in `~/.claude/.credentials.json` and `~/.claude.json`,
+  only on an explicit switch or undo.
 
 ## Security and verification
 
-- Claude, Codex, and Muse portal sources allow only `GET` to these exact URLs/paths:
+- **Network allowlists.** Usage clients allow only `GET` to
   `https://api.anthropic.com/api/oauth/usage` and
   `https://chatgpt.com/backend-api/wham/usage`, plus `https://dev.meta.ai` paths
   `/api/auth/me`, `/api/portal/teams` (setup only), and
-  `/api/portal/teams/{numeric_team_id}/subscription-quota`.
-  No query strings, redirects, alternate hosts, other profile calls, proxies,
-  inference paths, token exchanges, or retries. TLS verification is enabled.
-  The tool identifies itself as `private-claude-usage/1.0`, not Claude Code.
-- The `--muse-cli-current` action, or a Muse row explicitly configured with
-  `source: cli_current`, or an independently enrolled Muse row, allows only one
-  `POST https://api.meta.ai/muse-code/key`, with the fixed onboarding-disabled
-  body. It does not enable POSTs in the Claude/Codex/portal clients or permit inference.
-- Each request has an eight-second deadline, including DNS and body reads.
-  Connections close on success/error or when their owned worker exits. Concurrent
-  foreground workers are bounded and reaped before report exit. Persistent
-  authentication work starts after successful `--auth-enroll` or explicit `--background start`, as described
-  above. No services or startup schedules are installed.
-- Claude/Codex `--capture` and Muse CLI sources read credentials using Linux `O_RDONLY`,
-  `O_NOFOLLOW`, `O_NONBLOCK`, and `O_NOATIME`. It requires an owned private regular
-  file and never writes, chmods, locks, renames, or refreshes that source.
-  Claude display metadata is read with the same read-only/no-atime flags; that
-  non-secret metadata need not be private. Legacy unnamed Claude rows can read
-  current metadata during reports only to label an exactly matching saved token.
-- Access tokens, expiry metadata, display identities, Codex account-routing IDs, Muse device access tokens/API keys, and Muse portal
-  cookies with identity/team bindings enter the encrypted vault. AES-256-GCM
-  protects the vault; scrypt derives its key from your passphrase. The passphrase
-  is never stored. The command unlock key is cached in the OS keyring for five
-  minutes, not in a disk file. An explicitly started renewal worker separately
-  holds the key in memory until stopped. A lost passphrase means recapturing tokens once
-  that unlock expires.
-- `.usage-data` is `0700`; configuration, vault, and switch undo record are `0600`.
-  Normal reports/captures do not modify existing provider stores or keyrings.
-  Only explicit `--switch`/`--undo-switch` edits the two Claude Code auth fields
-  described above, preserving unrelated credentials. Reports use this tool's vault;
-  configured Muse CLI sources read current Muse credentials, and legacy unnamed
-  Claude captures can read current local metadata for an exact token match.
-  Nothing remains connected after the report exits.
-- Tokens and raw server error bodies are never logged or included in JSON.
-  Runtime memory necessarily contains decrypted tokens while a check runs.
-  File encryption does not protect against a compromised process or root.
+  `/api/portal/teams/{numeric_team_id}/subscription-quota`. A separate allowlist
+  permits `GET https://api.anthropic.com/api/oauth/profile` for switching,
+  `--refresh` and following Claude Code's renewed token. No query strings,
+  redirects, alternate hosts, proxies, inference paths, token exchanges, or
+  retries; TLS verification is on. Requests identify as `quotahop/1.0`, not
+  Claude Code. Each has an eight-second deadline including DNS and body reads.
+  Native Claude/Codex/Muse processes started for enrollment or renewal make their
+  own first-party authentication requests inside the sandbox; they are not
+  QuotaHop HTTP clients.
+- **Muse bootstrap.** `--muse-cli-current`, a Muse row with `source: cli_current`,
+  or an enrolled Muse row allows one `POST https://api.meta.ai/muse-code/key` with
+  the fixed onboarding-disabled body. This does not enable POSTs in the other
+  clients or permit inference.
+- **Source files.** Claude/Codex `--capture` and Muse CLI sources read with
+  `O_RDONLY`, `O_NOFOLLOW`, `O_NONBLOCK` and `O_NOATIME`, require an owned private
+  regular file, and never write, chmod, lock, rename, or refresh it. Claude
+  display metadata uses the same flags and need not be private. Reports and the
+  worker read Claude Code's credentials the same way to follow its login.
+- **Vault.** Access tokens, expiries, display identities, Codex routing IDs, Muse
+  device tokens/API keys, and portal cookies with bindings are in the AES-256-GCM
+  vault with a scrypt-derived key. See [the unlock cache](#vault-and-unlock-cache)
+  and [renewal after reboot](#renewal-after-reboot) for where a derived key may
+  live. A lost passphrase means recapturing tokens once the unlock expires.
+- **Files.** `.usage-data` is `0700`; files are `0600`. Reports and captures do
+  not modify provider stores or keyrings. Explicit `--switch`/`--undo-switch`
+  edits the two Claude Code auth fields. Nothing remains connected after a
+  report exits, except a renewal worker started by an unlock or enrollment.
+- **Secrets.** Tokens and raw server error bodies are never logged or placed in
+  JSON. Runtime memory necessarily holds decrypted tokens while a check runs, and
+  encryption does not protect against a compromised process or root.
 
-Run the fake-credential test suite:
+## Run the tests
 
 ```sh
 .venv/bin/python -B -m unittest discover -s tests -v
 ```
 
-265 tests pass. They cover automatic switching, active-account badges, safe access-token
-synchronization, recommendation ordering, same-email Max/Team captures, colour and Unicode
-alignment, grouped/sorted compact and verbose reports, isolated
-entry removal, seven accounts captured from one changing source,
-correct plan labels, encrypted storage, source content/mtime/atime preservation,
-parsing, missing data, local countdowns/DST, 401/403/429, redirects, TLS/network
-errors, hard deadlines, secret redaction, endpoint/method restrictions, and absence
-of polling in ordinary reports. Renewal tests additionally cover independent
-enrollment, seven distinct grants, isolated filesystem visibility, the auth RPC
-allowlist, single-owner locking, rotation persistence ordering, crash suspension,
-removal, and actual background worker start/status/stop with fake grants. Serial unit tests prohibit child processes; concurrent integration
-tests verify bounded overlap, one cycle per account, duplicate suppression,
-worker reaping, timeout/crash handling, Ctrl-C/termination/hangup cleanup, and
-partial worker startup failures. Provider tests cover Codex routing and isolation,
-mixed reports, credit/model quota parsing, expiry, reflected-secret suppression,
-read-only capture, and historical Muse imports. Muse tests verify portal-only
-cookie routing, exact GET paths, explicit team selection, identity binding,
-one quota read per report, encrypted cookies, counter accuracy, stale/idle
-windows, and no key bootstrap in the portal route. Separate CLI-route tests cover
-its explicit selection, fixed bootstrap method/path/body, returned-key comparison,
-omitted usage, redaction, source preservation, and absence of background work,
-refresh or inference. Combined-report tests cover all nine account rows,
-configured labels, one Muse request, CLI source validation, and error isolation
-without portal/snapshot fallback. Identity tests cover named captures,
-recaptures, legacy migration, wrong-account rejection, workspace separation,
-metadata read races, source preservation, and redaction. Unlock-cache tests cover fixed expiry, reuse
-across captures/reports, wrong passwords, vault isolation, owner permissions,
-timeout-before-publish ordering, `--lock`, and safe fallback when keyrings are
-unavailable. A separate fake-key check on this Ubuntu machine also verified
-reuse across processes and kernel expiry. No tests use real
-credentials or inference. Passing mocked tests does not establish live endpoint
-access for your accounts.
-
-Switch tests use fake files and tokens to verify exact preservation of unrelated
-JSON text, Design/MCP auth, permissions, environment, scope metadata, profile
-allowlisting, token/email/plan checks, dry runs, no-op switching, encrypted undo,
-lock contention, concurrent edits, backup failure, and rollback after a failed
-second write. A read-only live profile GET was also verified successfully with
-the current CLI token; no real authentication files were switched during testing.
+Tests use fake credentials, temporary directories, and mocked provider responses;
+none use real credentials or inference. CI runs the suite on Python 3.12 and
+3.14. Passing mocked tests does not establish live endpoint access for your
+accounts.

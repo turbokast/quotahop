@@ -16,9 +16,10 @@ Runs locally on Ubuntu. No inference requests, hosted service, or telemetry.
 - **Readable anywhere.** Compact tables, colours, selected-login markers, and JSON for scripts.
 - **Herdr panel.** Keep quotas beside your work in an optional compact, live terminal split.
 - **Private accounts.** An encrypted vault, five-minute unlock cache, and separate entries for personal and Team subscriptions sharing an email.
+- **Optional renewal.** A background worker keeps independently held Claude and Codex logins alive and returns the login you switch away from to its own renewal.
 - **Explicit switching.** Preview, switch, and undo Claude subscription changes while preserving unrelated configuration.
 
-[Quick start](#quick-start) · [Everyday commands](#everyday-commands) · [Herdr plugin](#herdr-plugin) · [Renewal](#independent-sign-in-and-renewal) · [Full guide](USAGE.md) · [Security](SECURITY.md)
+[Quick start](#quick-start) · [Everyday commands](#everyday-commands) · [Herdr plugin](#herdr-plugin) · [Renewal](#independent-sign-in-and-renewal) · [Full guide](USAGE.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md)
 
 ## What’s supported
 
@@ -71,9 +72,9 @@ command arguments, config, issues, or screenshots.
 
 Captures copy access tokens only and leave provider auth untouched. They do not
 renew tokens; recapture after your normal login when one expires, or use
-[independent enrollment](#independent-sign-in-and-renewal).
-
-The original `./claude-usage` launcher remains supported and shares the vault.
+[independent enrollment](#independent-sign-in-and-renewal). A Claude login you
+make once in Claude Code can also become renewable without enrollment (see
+[renewal](#independent-sign-in-and-renewal)).
 
 ## Everyday commands
 
@@ -84,8 +85,9 @@ The original `./claude-usage` launcher remains supported and shares the vault.
 ./quotahop --sort 7d --reverse       # Sort within each provider group
 ./quotahop --remove 'you@example.com' --plan team_premium
 ./quotahop --change-password        # Preserve credentials; choose a new password
-./quotahop --lock                   # Stop renewal and clear the cached unlock
+./quotahop --lock                   # Lock panels, stop renewal until --background start, clear the cached unlock
 ./quotahop --help                   # Alphabetical options and examples
+./quotahop --data-dir DIR --setup   # Keep data in another private (0700) directory
 ```
 
 | Indicator | Meaning |
@@ -95,18 +97,21 @@ The original `./claude-usage` launcher remains supported and shares the vault.
 | `● LIVE ✓` / `✓ Ready` | Also a Claude switching candidate: token valid for over a minute, required scope if known, and quota headroom. |
 | `▶` | Matches the selected CLI credentials; already-running sessions may use another login. |
 | `—` | The provider did not supply this metric. |
+| `EXPIRED` | The saved access token has expired. A grant QuotaHop maintains recovers on its own once the worker runs; otherwise recapture or re-enroll. |
 | `THROTTLED` | The usage endpoint returned HTTP 429. Subscription quota is unknown; wait for the displayed cooldown. |
-| Auth error / Timeout / Network | The check failed; this does not mean the subscription is exhausted. See `--verbose`. |
+| Auth error / Timeout / Network | The check failed; this does not mean the subscription is exhausted. See `--verbose` and the [error labels](USAGE.md#error-labels). |
 
 **Ready does not mean automatic renewal is enabled.** Use `--background status`
 for renewal state. A switch verifies the target’s identity before installing it.
 
-Claude reports, panels and switches share a private 60-second usage cache, so
+Reports never run inference or login and never renew a token themselves. After
+an unlock they may restart a stopped renewal worker (unless you stopped it
+explicitly) and, for Claude logins Claude Code holds, copy its already-renewed
+access token into the encrypted vault. Claude reports, panels and switches share a private 60-second usage cache, so
 running a report followed by `--switch-next` does not immediately query all seven
 accounts again. Cache hits keep the original check time, expire at reset boundaries,
 and never survive a credential change. HTTP 429 starts a shared cooldown of at
-least five minutes (longer when requested by the server). No retries or token
-refreshes are triggered. Failed checks never become zero usage or exhausted quota.
+least five minutes (longer when requested by the server). No retries are made. Failed checks never become zero usage or exhausted quota.
 
 The default ranking uses `remaining percentage / (1 + hours until earliest reset)`.
 Remaining percentage is the smaller known five-hour/weekly headroom. Exhausted
@@ -130,6 +135,7 @@ per provider, with separate five-hour and weekly percentages. It refreshes every
 provider, Enter to preview its Next account, and Enter again to confirm a Claude
 switch (Esc cancels). Codex/Muse switching is unavailable. It keeps the vault
 key in memory until locked/closed; `quotahop --lock` locks open panels too.
+Unlocking can restart a stopped renewal worker, which then outlives the panel.
 No credentials are copied into Herdr. Ordinary reports remain one-shot.
 If the active login cannot be verified, **Best?** shows the best saved candidate's
 remaining quota without claiming it is a different login; switching stays blocked.
@@ -138,7 +144,8 @@ It is a tab-local split; Herdr does not yet provide a global pinned plugin widge
 
 You can also run `./quotahop --panel` in any interactive terminal.
 See the [plugin guide](plugins/herdr/README.md) for configuration, controls,
-security boundaries and marketplace publication.
+security boundaries and marketplace publication, and the
+[panel reference](USAGE.md#side-panel) for every label and warning.
 
 ## Switch Claude subscriptions
 
@@ -152,11 +159,14 @@ security boundaries and marketplace publication.
 
 These explicit actions change the **shared Claude Code subscription login**.
 They preserve Claude Design, MCP auth, and unrelated configuration, without
-symlinks or global environment changes. For an independently enrolled Claude
-grant, switching transfers its complete credentials to Claude Code and permanently
-stops QuotaHop renewing that grant **before** writing the CLI files. Captured
-logins remain access-only. Existing sessions may need to reload credentials.
-Codex and Muse switching are not implemented.
+symlinks or global environment changes. When QuotaHop holds the target's full
+grant, Claude Code receives it and renews it while it is active; the login you
+switch away from returns to QuotaHop's background renewal in the same command
+([ownership](#independent-sign-in-and-renewal)). A target that was only captured
+gets an access-only login, valid until its token expires. Running sessions adopt
+the new login when they next read their credentials. `--undo-switch` restores the
+previous fields unless QuotaHop again holds that refresh token. Codex and Muse
+switching are not implemented.
 
 ## Add Muse Code
 
@@ -179,14 +189,15 @@ saved accounts, use independent enrollment or the [portal setup](USAGE.md#muse-c
 **The CLI route uses a bootstrap POST, not a documented read-only API.** It sends
 `{"onboard":false}`, requires an existing key, compares the returned key, and
 discards returned credentials. Observed key reuse is not a guarantee about
-future server behaviour. The portal alternative uses GETs but still awaits
-an authenticated end-to-end check.
+future server behaviour. The portal alternative uses GETs only; it is
+tested with mocked responses, not a live portal session.
 
 ## Independent sign-in and renewal
 
 Requires the native provider CLI and `bubblewrap` (`sudo apt install bubblewrap`).
-Enrollment runs in a separate filesystem/PID sandbox; shared CLI refresh tokens
-are never imported. If isolation cannot be established, enrollment fails.
+Enrollment signs in separately inside a filesystem/PID sandbox and does not read
+Claude Code's or Codex's credential files. If isolation cannot be established,
+enrollment fails.
 
 ```sh
 ./quotahop --auth-enroll max-1
@@ -202,36 +213,50 @@ are never imported. If isolation cannot be established, enrollment fails.
 Use a saved ID, email, or name. Add a new row with `--add` first; `--plan` resolves
 ambiguous subscriptions.
 
-**Successful enrollment starts a background worker.** Private Claude standby
-grants and Codex grants renew before expiry. Muse tracks expiry but cannot automatically renew its device
-token. The worker keeps the vault key in memory and never polls quota or switches
-global auth. No service, cron job, or boot startup is installed.
+**Successful enrollment starts a background worker.** Claude and Codex grants
+QuotaHop holds renew before expiry. Muse tracks expiry but cannot automatically
+renew its device token. The worker keeps the vault key in memory and never polls
+quota or switches global auth.
 
-Renewal updates **the vault**. Every Claude grant has exactly one renewal owner.
-`--switch`/`--switch-next` gives the target's full grant to Claude Code, which
-renews it while it is active (`cli_owned`). The previous login comes back to
-QuotaHop in the same switch, taken from Claude Code's latest copy while holding
-Claude Code's own refresh locks, and is renewed in the background again. Running
-sessions re-read the file under those locks, so they move to the new login and
-never refresh the old one. If you `/login` in Claude Code yourself, the worker
-notices, takes back the previous account and keeps the new one in sync. Sign in
-once per account; switching never costs a login. Uncertain refresh outcomes
+**Every Claude grant has exactly one renewal owner.** `--switch`/`--switch-next`
+gives the target's full grant to Claude Code, which renews it while it is active
+(`cli_owned`). The previous login comes back to QuotaHop in the same switch,
+taken from Claude Code's latest copy while holding Claude Code's own refresh
+locks, and is renewed in the background again (`ready`). Running sessions re-read
+the file under those locks, so they move to the new login and never refresh the
+old one. If you `/login` in Claude Code yourself, the worker notices, takes back
+the previous account and adopts the new login, **including accounts you only
+captured**, as long as it can attribute the login by exact token or a verified
+account/organisation match. So you can sign in once in Claude Code and QuotaHop
+keeps it renewable; switching never costs a login. Uncertain refresh outcomes
 suspend the account rather than replay a potentially consumed token.
 
-A reboot stops the worker; your next unlock restarts it, or opt in to
-`--background enable-autostart` to restart it at desktop login using your login
-keyring ([trade-offs](USAGE.md#renewal-after-reboot)).
+**Lifecycle.** A reboot stops the worker. Any interactive unlock (a report, or `u`
+in the panel) restarts it when grants need maintenance, **except** after an
+explicit `--background stop` or `--lock`, which stay in effect until
+`--background start`. To restart it at desktop login without unlocking, opt in
+with `--background enable-autostart` (stores the vault key in your login keyring
+and adds `~/.config/autostart/quotahop-renewal.desktop`; undo with
+`--background disable-autostart`). Read the [trade-offs](USAGE.md#renewal-after-reboot)
+first. `--background status` shows per-account states (`ready`, `blocked`,
+`cli_owned`, `legacy_hold`, `suspended`, `reauth_required`, `needs_enrollment`;
+see the [state table](USAGE.md#status)).
 
-Older grants (`legacy_hold`) resume renewal once the worker confirms Claude Code
-is not holding them. For a grant that has already expired, use
-`--auth-forget ACCOUNT` followed by `--auth-enroll ACCOUNT` (add `--plan` when
-ambiguous). This does not log out or revoke the old session. A provider-revoked grant still requires a fresh sign-in.
+**When to re-enroll.** Only for `suspended` or `reauth_required` grants, or an
+expired/revoked refresh token: run `--auth-forget ACCOUNT` then
+`--auth-enroll ACCOUNT` (add `--plan` when ambiguous). This does not log out or
+revoke the old session. An `EXPIRED` access token on a maintained grant recovers
+on its own. `legacy_hold` grants resume renewal once the CLI is confirmed to hold
+a different login.
 
-Claude 2.1.296 and Muse 1.4.6-R6000.1 authentication are pinned to inspected
-Linux executable hashes. Other builds, even with the same version, are refused
-until verified. After a Claude Code auto-update, renewal keeps using the verified
-build while it remains in Claude's versions directory; if none remains, renewal
-pauses (grants stay intact, shown as `blocked`) instead of suspending. Read-only capture does not require these binaries. See the
+**Native builds.** Claude Code 2.1.296's Linux binary and Muse 1.4.6-R6000.1 are
+pinned to inspected SHA-256 hashes; other builds, even of the same version, are
+refused until verified. QuotaHop finds the pinned Claude build on your PATH, among
+sibling versions, or in a retained copy it keeps under
+`${XDG_DATA_HOME:-~/.local/share}/quotahop/` so that Claude Code pruning old
+versions cannot stop renewal. If none verifies, renewal pauses as `blocked`
+(grants intact, retried every 10 minutes) instead of suspending. Read-only
+capture does not need these binaries. See the
 [renewal guide](USAGE.md#optional-background-authentication-renewal).
 
 ## Change the vault password
@@ -244,7 +269,9 @@ pauses (grants stay intact, shown as `blocked`) instead of suspending. Read-only
 Supply the current password or use an unexpired cached unlock, then enter and
 confirm a new password. Account definitions, credentials, renewable grants, and
 switch undo history are preserved. A running worker is paused and restarted
-with the new key; a stopped worker stays stopped.
+with the new key; a stopped worker is not started by the change itself (your next
+unlock restarts it unless you stopped it explicitly). A key stored by autostart is
+updated.
 
 If interrupted, run the command again and enter the **new** password to finish
 the encrypted recovery transaction. Do not delete `vault-rekey.json` manually.
@@ -259,15 +286,14 @@ There is no recovery backdoor or silent deletion of saved credentials.
 .venv/bin/python -B -m unittest discover -s tests -v
 ```
 
-Tests use fake credentials and mocked provider responses. The suite covers
-parsing, account isolation, endpoint allowlists, timeouts, concurrency, terminal
-layouts, switching, renewal, and interrupted password changes. The native sandbox
-check requires local CLI dependencies; mocked tests do not prove live access.
-
-GitHub runs tests and CodeQL, reviews dependency changes, and opens Dependabot
-update PRs. Changes are reviewed before merging. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for a short guide and [SECURITY.md](SECURITY.md) for private vulnerability reports.
-Never include real account data or vault files in a contribution.
+Tests use fake credentials and mocked provider responses; they do not prove live
+access. The optional native sandbox check requires the local provider CLI and
+bubblewrap. CI runs the suite on Python 3.12 and 3.14, plus CodeQL and dependency
+review, and Dependabot opens update PRs. Changes are reviewed before merging.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for a short guide, the
+[code of conduct](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) for private
+vulnerability reports. Never include real account data or vault files in a
+contribution.
 
 More detail: [USAGE.md](USAGE.md) · [RESEARCH.md](RESEARCH.md).
 

@@ -67,7 +67,7 @@ class MuseCliClient:
                 connection.request("POST", PATH, body=BODY, headers={
                     "Authorization": "Bearer " + token, "x-api-version": "1.0.0",
                     "Content-Type": "application/json", "Accept": "application/json",
-                    "Connection": "close", "User-Agent": "private-claude-usage/1.0",
+                    "Connection": "close", "User-Agent": "quotahop/1.0",
                 })
                 response = connection.getresponse()
                 if response.status in (401, 403):

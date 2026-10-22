@@ -98,6 +98,13 @@ class KeyringTests(unittest.TestCase):
             self.assertTrue(keyring.start_from_keyring(self.store, self.root / "tool", wait=0)["running"])
         start.assert_called_once_with(self.store, self.root / "tool", key=KEY)
 
+    def test_login_item_respects_explicit_stop(self):
+        keyring.put(self.store, self.envelope, KEY)
+        self.store.write(renewal.STOP, {"requested_at": 0})
+        with patch.object(renewal, "running", return_value=False), patch.object(renewal, "start") as start:
+            self.assertFalse(keyring.start_from_keyring(self.store, self.root / "tool", wait=0)["running"])
+        start.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

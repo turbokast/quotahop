@@ -23,6 +23,6 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Ubuntu/Linux version, Python version, QuotaHop commit, and affected provider. No account details needed.
+      description: Ubuntu/Linux version, Python version, QuotaHop commit, affected provider, and the Claude Code / Codex / Muse CLI version. For renewal or switching problems, include `quotahop --background status` output with emails and names redacted. No account details needed.
     validations:
       required: true

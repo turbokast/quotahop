@@ -181,6 +181,29 @@ class OwnershipTests(unittest.TestCase):
             start.side_effect = live.LiveError("worker_start", "fake")
             self.assertFalse(renewal.ensure_running(self.store, KEY))
 
+    def test_explicit_stop_survives_unlocks_until_background_start(self):
+        self.install("ready", oauth("a", 1))
+        with patch.object(renewal, "start") as start:
+            renewal.stop(self.store)  # worker not running: records the intent
+            self.assertFalse(renewal.ensure_running(self.store, KEY))
+            start.assert_not_called()
+            self.store.delete(renewal.STOP)  # what --background start does
+            self.assertTrue(renewal.ensure_running(self.store, KEY))
+
+    def test_login_in_claude_code_adopts_a_captured_only_account(self):
+        # B was only captured (access token, no QuotaHop grant); the user then
+        # signed in as B in Claude Code. QuotaHop mirrors it and keeps it later.
+        self.install("cli_owned", oauth("a", 1))
+        saved = self.records()
+        del saved["max-b"]
+        self.store.write(renewal.REGISTRY, renewal.seal(saved, KEY), replace=True)
+        self.write_cli(oauth("b", 4))
+        self.assertEqual(self.sync(), "max-b")
+        saved = self.records()
+        self.assertEqual((saved["max-b"]["state"], saved["max-b"]["auth"]["claudeAiOauth"]["refreshToken"]),
+                         ("cli_owned", "FAKE-B-REFRESH-4"))
+        self.assertEqual(saved["max-a"]["state"], "ready")
+
     def test_refresh_lock_waits_for_claude_and_never_breaks_its_lock(self):
         (self.claude / ".oauth_refresh.lock").mkdir()
         with patch.object(ownership, "LOCK_WAIT", 0.3), self.assertRaises(live.LiveError) as caught:

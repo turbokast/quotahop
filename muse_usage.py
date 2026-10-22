@@ -89,7 +89,7 @@ class MuseClient:
                 connection.request("GET", path, headers={
                     "Cookie": "llama_dev_sess=" + session_cookie,
                     "Accept": "application/json", "Content-Type": "application/json", "Connection": "close",
-                    "User-Agent": "private-claude-usage/1.0",
+                    "User-Agent": "quotahop/1.0",
                 })
                 response = connection.getresponse()
                 if response.status in (401, 403):

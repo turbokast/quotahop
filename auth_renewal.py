@@ -1,7 +1,9 @@
-"""Explicit background renewal of independently enrolled subscription grants.
+"""Background renewal of subscription grants QuotaHop holds.
 
-The ordinary usage report never starts this worker. Captured/shared refresh
-credentials and switch undo records are never inputs to renewal.
+Grants come from independent enrollment, or are taken back from Claude Code
+(see cli_ownership.py) so each Claude grant has exactly one renewal owner.
+Reports never renew; an unlock restarts a stopped worker unless the user
+explicitly stopped it. Switch undo records are never inputs to renewal.
 """
 import base64
 from contextlib import contextmanager
@@ -156,7 +158,7 @@ def ensure_running(store, key):
     their 30-day refresh tokens, so expired access tokens recover once it runs.
     """
     try:
-        if running(store) or not any(i['state'] in ('ready', 'cli_owned', 'legacy_hold')
+        if running(store) or explicitly_stopped(store) or not any(i['state'] in ('ready', 'cli_owned', 'legacy_hold')
                                      for i in records(store, key).values()):
             return False
         start(store, store.path, key=key)
@@ -207,10 +209,10 @@ def enrolled(store, key, ident):
 
 
 def claude_handoff(store, key, ident, entry):
-    """Prepare a grant for one-way transfer. Caller holds the vault lock.
+    """The full grant to install in Claude Code, or None. Caller holds the vault lock.
 
-    Never replay a grant already handed to a CLI, even after switching away.
-    A legacy isolated grant can be transferred once, but cannot auto-renew.
+    Only grants QuotaHop currently owns can be handed over; a grant Claude
+    Code holds is never exported twice. It returns via cli_ownership.
     """
     item = records(store, key).get(ident)
     if (not item or item['origin'] != owned_claude.ORIGIN
@@ -389,8 +391,18 @@ def status(store, accounts):
     return result
 
 
+def explicitly_stopped(store):
+    try:
+        store.read(STOP)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def stop(store, timeout=45):
     if not running(store):
+        # Record the intent: unlocks and autostart honour it until --background start.
+        store.write(STOP, {'requested_at': time.time()}, replace=True)
         return {'message': 'Background renewal is stopped.', 'running': False}
     try:
         if store.read(STATUS).get('operation') == 'enrollment':
@@ -509,7 +521,7 @@ def start(store, data_dir, *, key=None):
         if not select.select([ready_read], [], [], 10)[0] or os.read(ready_read, 1) != b'1':
             raise live.LiveError('worker_start', 'Renewal worker could not start; no authentication attempted.')
         proc.wait(timeout=5)  # reap the short-lived launcher; worker was explicitly detached
-        return {'message': 'Background renewal started. Key stays in memory until --background stop or --lock. No restart after reboot.', 'running': True}
+        return {'message': 'Background renewal started. Key stays in memory until --background stop or --lock; after a reboot the next unlock (or opt-in autostart) restarts it.', 'running': True}
     except BaseException:
         if proc is not None:
             proc.kill()
