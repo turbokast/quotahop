@@ -266,10 +266,12 @@ class NativeTests(unittest.TestCase):
             yield proc
         with patch.object(isolated_auth, 'command', side_effect=lambda provider, root, args: [str(root), *args]), \
              patch.object(isolated_auth, 'process', fake_process), \
-             patch('claude_switch.target_auth', return_value=({}, {'accountUuid': ACCOUNT, 'organizationUuid': ORG, 'emailAddress': EMAIL})):
+             patch('claude_switch.target_auth', side_effect=AssertionError('no profile request after rotation')):
             auth, entry = claude.perform(old, account={'plan': 'max_20x'})
         self.assertEqual(auth, fresh)
-        self.assertEqual(entry, expected)
+        # The caller carries the existing binding; a failed post-refresh
+        # profile request can never discard the rotated grant.
+        self.assertEqual(entry, {k: v for k, v in expected.items() if k not in ('claude_identity', 'identity')})
         proc.communicate.assert_called_once()
 
     def test_native_login_format_includes_client_and_refresh_expiry(self):
@@ -316,7 +318,8 @@ class NativeTests(unittest.TestCase):
     def test_unverified_native_binary_fails_closed(self):
         with tempfile.TemporaryDirectory() as root:
             binary = Path(root) / 'claude'; binary.write_bytes(b'not a verified executable')
-            with patch('isolated_auth.shutil.which', return_value=str(binary)), self.assertRaises(live.LiveError):
+            with patch('isolated_auth.shutil.which', return_value=str(binary)), \
+                 patch.dict(os.environ, {'XDG_DATA_HOME': root}), self.assertRaises(live.LiveError):
                 isolated_auth.native('claude')
 
     def test_auto_updated_claude_keeps_verified_build_after_old_versions_are_pruned(self):

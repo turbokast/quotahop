@@ -149,6 +149,22 @@ def running(store):
         raise
 
 
+def ensure_running(store, key):
+    """Restart maintenance after a reboot whenever the vault is unlocked.
+
+    The worker keeps the key only in memory, so a reboot stops it. Grants keep
+    their 30-day refresh tokens, so expired access tokens recover once it runs.
+    """
+    try:
+        if running(store) or not any(i['state'] in ('ready', 'cli_owned', 'legacy_hold')
+                                     for i in records(store, key).values()):
+            return False
+        start(store, store.path, key=key)
+        return True
+    except (live.LiveError, OSError, ValueError):
+        return False
+
+
 def unlock(store):
     try:
         envelope = store.read('vault.json')
@@ -432,6 +448,10 @@ def cycle(store, key, now=None):
                 store.write(STATUS, public_status(accounts, saved, active=True), replace=True)
                 try:
                     fresh, entry = perform(valid[ident], item['auth'])
+                    for field in ('claude_identity', 'identity'):
+                        # A refresh cannot change the account; keep its binding.
+                        if item['entry'].get(field) and not entry.get(field):
+                            entry[field] = item['entry'][field]
                     require_same(item['entry'], entry)
                     item.update(auth=fresh, entry=entry, state='ready', next_at=entry['expires_at'] - 300, updated_at=time.time())
                     item.pop('blocked', None)

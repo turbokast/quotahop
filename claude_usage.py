@@ -355,6 +355,7 @@ class Store:
     def __init__(self, path, create=False, *, maintenance=False):
         self.maintenance = maintenance
         path = Path(os.path.abspath(path))
+        self.path = path
         if any(p in {".claude", "claude", ".aws", ".codex", "codex", "muse", ".muse", ".git"} for p in path.parts):
             raise UsageError("Data directory cannot be inside a protected application directory.")
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
@@ -1166,7 +1167,8 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 import saved_refresh
                 entries, refresh_notes = saved_refresh.refresh(store, accounts)
             else:
-                entries = live_usage.load_vault(store, verbose=args.verbose and not args.json, accounts=accounts)
+                entries = live_usage.load_vault(store, verbose=args.verbose and not args.json, accounts=accounts,
+                                                ensure_renewal=True)
             entries = account_identity.for_report(entries)
             import credential_state
             before = credential_state.current(accounts, entries)

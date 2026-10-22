@@ -254,12 +254,16 @@ def encrypt_vault(entries, key, salt):
             "ciphertext": base64.b64encode(encrypted).decode()}
 
 
-def load_vault(store, *, verbose=False, accounts=None):
+def load_vault(store, *, verbose=False, accounts=None, ensure_renewal=False):
     try:
         envelope = store.read("vault.json")
     except FileNotFoundError:
         return {}
     entries, key, _ = unlock_cached(store, envelope, verbose=verbose)
+    if ensure_renewal:
+        import auth_renewal
+        if auth_renewal.ensure_running(store, key) and verbose:
+            print("Background renewal was not running (e.g. after a reboot); restarted it.", file=sys.stderr)
     if accounts is not None:
         import saved_refresh
         entries = saved_refresh.follow_cli(store, accounts, entries, key)

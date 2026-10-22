@@ -159,6 +159,28 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(saved["max-a"]["state"], "ready")
         self.assertEqual(saved["max-b"]["state"], "cli_owned")
 
+    def test_renewal_keeps_binding_without_a_post_refresh_profile_request(self):
+        self.install("ready", oauth("a", 1), "cli_owned", oauth("b", 1))
+        self.write_cli(oauth("b", 1))
+        fresh = oauth("a", 2)
+        self.renew.side_effect = None
+        self.renew.return_value = ({"claudeAiOauth": fresh}, ownership.entry_for({"claudeAiOauth": fresh}))
+        renewal.cycle(self.store, KEY, now=time.time() + 9 * 3600)
+        item = self.records()["max-a"]
+        self.assertEqual((item["state"], item["entry"]["claude_identity"]), ("ready", binding("a")))
+        self.assertEqual(live.load_vault(self.store)["max-a"]["access_token"], "FAKE-A-ACCESS-2")
+
+    def test_unlock_restarts_stopped_worker_only_when_grants_need_it(self):
+        with patch.object(renewal, "start") as start:
+            self.assertFalse(renewal.ensure_running(self.store, KEY))  # nothing enrolled
+            self.install("ready", oauth("a", 1))
+            self.assertTrue(renewal.ensure_running(self.store, KEY))
+            start.assert_called_once_with(self.store, self.store.path, key=KEY)
+            with renewal.worker_lock(self.store):  # already running
+                self.assertFalse(renewal.ensure_running(self.store, KEY))
+            start.side_effect = live.LiveError("worker_start", "fake")
+            self.assertFalse(renewal.ensure_running(self.store, KEY))
+
     def test_refresh_lock_waits_for_claude_and_never_breaks_its_lock(self):
         (self.claude / ".oauth_refresh.lock").mkdir()
         with patch.object(ownership, "LOCK_WAIT", 0.3), self.assertRaises(live.LiveError) as caught:

@@ -73,6 +73,8 @@ class Source:
             if prompt:
                 # An explicit unlock may reuse the normal five-minute cache.
                 entries, key, _ = live.unlock_cached(store, envelope)
+                import auth_renewal
+                auth_renewal.ensure_running(store, key)
             else:
                 key = self.key or (vault_cache.get(store.fd, envelope) if not self.locked else None)
                 if key is None:

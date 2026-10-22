@@ -84,6 +84,11 @@ def perform(auth=None, *, account):
         entry = live.read_access_token(source, 'claude', include_identity=False)
         if not entry.get('expires_at') or entry['expires_at'] < time.time() + 600:
             raise live.LiveError('auth_expiry', 'Claude did not save a grant valid for at least ten minutes.')
+        if auth is not None:
+            # Renewal: the sandbox already rotated the grant. A profile request
+            # here could fail (e.g. HTTP 429) and discard the only valid copy.
+            # The caller keeps the existing account binding.
+            return fresh, entry
         _, metadata = claude_switch.target_auth(account, entry)
         entry['claude_identity'] = saved_refresh.binding(metadata)
         identity = account_identity.extract(metadata.get('emailAddress'), metadata.get('displayName'))
