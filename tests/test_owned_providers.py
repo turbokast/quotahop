@@ -271,7 +271,8 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(auth, fresh)
         # The caller carries the existing binding; a failed post-refresh
         # profile request can never discard the rotated grant.
-        self.assertEqual(entry, {k: v for k, v in expected.items() if k not in ('claude_identity', 'identity')})
+        self.assertAlmostEqual(entry.pop('expires_at'), expected['expires_at'], places=3)  # ms round trip
+        self.assertEqual(entry, {k: v for k, v in expected.items() if k not in ('claude_identity', 'identity', 'expires_at')})
         proc.communicate.assert_called_once()
 
     def test_native_login_format_includes_client_and_refresh_expiry(self):
