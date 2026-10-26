@@ -65,16 +65,21 @@ JSON adds `error_code` and, for HTTP 429, `retry_after_seconds`.
 
 ### Ranking
 
-The default `--sort recommended` balances spare capacity and reset urgency:
+The default `--sort recommended` (also used by `--switch-next` and the panel's
+Next) minimises wasted allowance:
 
-- Live accounts with headroom and future reset times come first, scored as
-  `remaining percentage / (1 + hours until the earliest reset)`, highest first.
-  Remaining percentage is the smaller of the reported five-hour and weekly
-  headroom. The one-hour offset prevents a nearly empty account from winning
-  solely because it resets in seconds.
-- A missing window is ignored, so a subscription with only a weekly limit can
-  still rank normally. Live headroom with missing or elapsed reset times comes
-  next, ordered by remaining capacity. Elapsed resets never imply a fresh allowance.
+- Usable accounts (at least 5% headroom in every reported window) come first,
+  **earliest weekly reset first**. Unused weekly allowance is lost at that
+  reset, so using the soonest-expiring balance first wastes the least. The
+  five-hour window only decides whether an account is usable now; an idle
+  account with no five-hour reset yet still ranks by its weekly reset.
+- Ties, and accounts whose weekly window has not started (nothing at risk yet,
+  so they follow accounts with real deadlines), go to the most headroom: the
+  smaller of five-hour and weekly remaining.
+- A missing window is ignored, so a weekly-only subscription ranks normally.
+  Elapsed reset times never imply a fresh allowance.
+- Accounts under 5% headroom come next, so a switch does not land on a nearly
+  empty account.
 - Accounts at or above 100% in either window come after usable accounts,
   sorted by when all exhausted windows are due to reset, where known.
 - Errors, unconfigured accounts, historical snapshots, and accounts with no

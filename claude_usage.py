@@ -611,12 +611,21 @@ def error_label(row):
             "invalid_credentials": "BAD TOKEN", "unsupported": "UNSUPPORTED"}.get(row.get("error_code"), "ERROR")
 
 
-def recommendation(row, now):
-    """Heuristic priority from observed main windows, never inferred quota resets.
+MIN_HEADROOM = 5  # percent; below this an account is a last resort, not a switch target
 
-    Percentages across plans are relative headroom, not comparable token counts.
-    A one-hour offset avoids favouring a nearly empty account just because its
-    reset is seconds away. Missing windows are ignored (e.g. weekly-only Codex).
+
+def recommendation(row, now):
+    """Use-it-or-lose-it priority from observed windows, never inferred resets.
+
+    Unused weekly allowance is lost at the weekly reset, so usable accounts
+    are ordered earliest weekly reset first (earliest-deadline-first wastes
+    the least allowance). The five-hour window only decides whether an account
+    is usable now. Accounts below MIN_HEADROOM come after usable ones so a
+    switch does not land on a nearly empty account. Percentages across plans
+    are relative headroom, not comparable token counts. Missing windows are
+    ignored (e.g. weekly-only Codex).
+
+    Tiers: 0 usable, 1 nearly empty or unknown deadline, 2 exhausted, 3 unknown.
     """
     name = row["name"].casefold()
     if not current_usage(row, now):
@@ -638,13 +647,14 @@ def recommendation(row, now):
         # Every exhausted window must reset before the account is usable.
         wait = max(resets) if all(s is not None and s > 0 for s in resets) else float("inf")
         return (2, wait, 0, name)
-    resets = [seconds(window) for window in windows]
-    if not all(s is not None and s > 0 for s in resets):
-        # Live headroom is still useful, but its expiry urgency is unknown.
+    if remaining < MIN_HEADROOM:
         return (1, -remaining, 0, name)
-    soonest_hours = min(resets) / 3600
-    score = remaining / (1 + soonest_hours)
-    return (0, -score, -remaining, name)
+    weekly = usage.get("seven_day") or {}
+    deadline = seconds(weekly) if weekly.get("utilization") is not None else None
+    if deadline is None or deadline <= 0:
+        # An unstarted weekly window has nothing at risk yet: after real deadlines.
+        return (0, float("inf"), -remaining, name)
+    return (0, deadline, -remaining, name)
 
 
 def sort_report(data, column="recommended", reverse=False, *, now=None):

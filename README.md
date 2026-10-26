@@ -113,10 +113,11 @@ accounts again. Cache hits keep the original check time, expire at reset boundar
 and never survive a credential change. HTTP 429 starts a shared cooldown of at
 least five minutes (longer when requested by the server). No retries are made. Failed checks never become zero usage or exhausted quota.
 
-The default ranking uses `remaining percentage / (1 + hours until earliest reset)`.
-Remaining percentage is the smaller known five-hour/weekly headroom. Exhausted
-and unavailable accounts rank below usable ones. This is a practical heuristic;
-percentages across different plans do not represent equal token allowances.
+The default ranking is **use it or lose it**: usable accounts are ordered by
+earliest weekly reset, because unused weekly allowance is lost at that reset.
+Ties go to the most usable headroom (the smaller of five-hour and weekly
+remaining). Accounts under 5% headroom, then exhausted and unavailable accounts,
+rank below usable ones. Percentages across plans are not equal token allowances.
 
 ## Herdr plugin
 

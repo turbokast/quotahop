@@ -148,13 +148,27 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(data, before)
         return [a["id"] for a in result["accounts"]]
 
-    def test_balances_capacity_and_reset_instead_of_just_one_column(self):
+    def test_earliest_weekly_reset_first_so_least_allowance_is_wasted(self):
+        # The reported case: an idle account (no five-hour reset yet) whose
+        # weekly allowance resets soonest must come before larger balances.
+        team1 = self.account("team1", 100, None, weekly_remaining=17, weekly_hours=19.9)
+        team2 = self.account("team2", 100, None, weekly_remaining=31, weekly_hours=67)
+        max1 = self.account("max1", 100, None, weekly_remaining=73, weekly_hours=89)
+        nearly_empty = self.account("nearly-empty", 100, None, weekly_remaining=3, weekly_hours=94)
+        exhausted = self.account("exhausted", 100, None, weekly_remaining=0, weekly_hours=5)
+        self.assertEqual(self.ordered(max1, nearly_empty, team2, exhausted, team1),
+                         ["team1", "team2", "max1", "nearly-empty", "exhausted"])
+
+    def test_same_weekly_deadline_prefers_more_usable_headroom(self):
         soon = self.account("soon", 70, 1)
         later = self.account("later", 90, 4)
         almost_empty = self.account("almost-empty", 1, 1 / 60)
-        self.assertEqual(self.ordered(almost_empty, later, soon), ["soon", "later", "almost-empty"])
-        larger = self.account("larger", 90, 1)
-        self.assertEqual(self.ordered(soon, larger), ["larger", "soon"])
+        self.assertEqual(self.ordered(almost_empty, later, soon), ["later", "soon", "almost-empty"])
+
+    def test_unstarted_weekly_window_follows_real_deadlines(self):
+        fresh = self.account("fresh", 100, None, weekly_remaining=100, weekly_hours=None)
+        at_risk = self.account("at-risk", 100, None, weekly_remaining=40, weekly_hours=120)
+        self.assertEqual(self.ordered(fresh, at_risk), ["at-risk", "fresh"])
 
     def test_weekly_headroom_limits_priority_and_either_limit_can_block(self):
         weekly_tight = self.account("weekly-tight", 95, 1, weekly_remaining=5)
@@ -192,7 +206,7 @@ class RecommendationTests(unittest.TestCase):
         unknown = self.account("unknown", 100, 0.01)
         unknown["usage"] = app.parse_usage({})
         self.assertEqual(self.ordered(snapshot, error, blocked, unknown, elapsed, missing, good),
-                         ["good", "missing-reset", "elapsed-reset", "blocked", "error", "snapshot", "unknown"])
+                         ["missing-reset", "elapsed-reset", "good", "blocked", "error", "snapshot", "unknown"])
 
     def test_reverse_preserves_availability_tiers(self):
         good = self.account("good", 90, 1)
