@@ -274,7 +274,7 @@ def apply(credentials, metadata, oauth, account, before_creds, before_meta, guar
         raise
 
 
-def recommended_account(store, accounts, entries, plan=None, jobs=4):
+def recommended_account(store, accounts, entries, plan=None, jobs=4, exclude=frozenset()):
     """One live usage cycle; same ranking as the table, usable Claude rows only."""
     import datetime as dt
     from claude_usage import UTC, concurrent_report, recommendation, sort_report
@@ -282,7 +282,7 @@ def recommended_account(store, accounts, entries, plan=None, jobs=4):
         fail("Automatic switching supports Claude subscriptions only.")
     candidates = []
     for account in accounts:
-        if account["plan"] not in ("max_20x", "team_premium") or (plan and account["plan"] != plan):
+        if account["plan"] not in ("max_20x", "team_premium") or (plan and account["plan"] != plan) or account["id"] in exclude:
             continue
         try:
             select([account], entries, account["id"], plan)
@@ -304,7 +304,8 @@ def recommended_account(store, accounts, entries, plan=None, jobs=4):
     from collections import Counter
     from claude_usage import error_label
     counts = Counter()
-    counts['auth not ready'] = sum(a['plan'] in ('max_20x', 'team_premium') and (not plan or a['plan'] == plan) for a in accounts) - len(candidates)
+    counts['auth not ready'] = sum(a['plan'] in ('max_20x', 'team_premium') and (not plan or a['plan'] == plan)
+                                   and a['id'] not in exclude for a in accounts) - len(candidates)
     for row in data['accounts']:
         counts[error_label(row).lower() if row['status'] == 'error' else
                'at quota limit' if recommendation(row, now)[0] == 2 else 'usage or auth unverified'] += 1
@@ -314,7 +315,7 @@ def recommended_account(store, accounts, entries, plan=None, jobs=4):
 
 def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=False, automatic=False, jobs=4,
            vault_key=None, expected_current=None, expected_target=None, require_available=False,
-           authorize=None):
+           authorize=None, exclude=frozenset()):
     check_environment()
     if automatic and plan not in (None, "max_20x", "team_premium"):
         fail("Automatic switching supports Claude subscriptions only.")
@@ -336,7 +337,7 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
             if not dry_run:
                 import saved_refresh
                 entries, _ = saved_refresh.synchronize(store, accounts, entries, key, salt)
-            selector = recommended_account(store, accounts, entries, plan, jobs)
+            selector = recommended_account(store, accounts, entries, plan, jobs, exclude)
         import auth_renewal
         credential_path, metadata_path = paths()
         backup = None

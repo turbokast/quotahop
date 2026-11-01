@@ -88,8 +88,10 @@ def write(directory, name, value):
             pass
 
 
-def fetch(store, ident, entry, seen):
-    """Return parsed usage, original check time and whether it was reused."""
+def fetch(store, ident, entry, seen, *, fresh=False):
+    """Return parsed usage, original check time and whether it was reused.
+
+    fresh skips reuse of a recent success (never an HTTP 429 cooldown)."""
     import claude_usage as app
     if entry.get("provider", "claude") != "claude":
         raise live.LiveError("provider_mismatch", "Saved credential belongs to a different provider; no request made.")
@@ -109,7 +111,7 @@ def fetch(store, ident, entry, seen):
             if until and until > now:
                 raise live.LiveError("rate_limited", "Usage endpoint cooldown after HTTP 429; no request made. Subscription quota is unknown, not exhausted.", retry_after=until - now)
             checked = saved.get("checked_at")
-            if checked and 0 <= now - app.timestamp(checked).timestamp() < TTL:
+            if checked and not fresh and 0 <= now - app.timestamp(checked).timestamp() < TTL:
                 usage = validate_usage(saved.get("usage"))
                 # Never reuse a window across its reset boundary.
                 windows = [usage[k] for k in ("five_hour", "seven_day")]

@@ -545,6 +545,48 @@ token, and refuses if QuotaHop again holds the saved refresh token
 renews that grant. A successful undo deletes the record; another switch replaces
 it. Reports never read it. Nothing is revoked server-side.
 
+### Automatic switching at a usage limit
+
+Opt in once, and QuotaHop switches for you when a Claude Code session stops at
+a subscription limit, then asks the stopped sessions to carry on:
+
+```sh
+./quotahop --auto-switch enable    # add a StopFailure hook to ~/.claude/settings.json
+./quotahop --auto-switch status    # hook, unlock source, waiting sessions, last result
+./quotahop --auto-switch run       # finish queued work now (may prompt to unlock)
+./quotahop --auto-switch disable   # remove only QuotaHop's hook
+```
+
+How it works:
+
+1. Claude Code runs the hook when a turn ends with a `rate_limit` or
+   `billing_error` API error. The hook records only the session ID, starts one
+   detached worker if none is running, and returns at once. It never prompts,
+   prints or changes Claude's behaviour.
+2. The worker waits about eight seconds so sessions that stop together are
+   handled together, then unlocks the vault **without prompting**: from the
+   five-minute unlock cache, or from the login keyring if
+   `--background enable-autostart` is on. A locked vault leaves the sessions
+   queued and raises a desktop notification; run `--auto-switch run` to finish.
+3. A **fresh** usage check (bypassing the 60-second cache, still honouring a 429
+   cooldown) must show the current login exhausted or under 5% headroom. A
+   temporary rate limit with verified headroom never switches, and a failed
+   check is never treated as exhausted.
+4. It runs the same recommended switch as `--switch-next`, never choosing the
+   login that just hit its limit. Running sessions adopt the new login through
+   Claude Code's credential-file change detection.
+5. Each stopped session that runs in a [Herdr](#side-panel) pane gets a prompt
+   saying the subscription was switched and asking it to resume everything it
+   was doing. Sessions outside Herdr cannot be reached: a desktop notification
+   tells you to type `continue` in them.
+
+A session that stops on the outgoing login within 15 minutes after a switch is
+just asked to resume. Safety caps: at most three automatic switches per 30
+minutes, and at most two resume prompts per session in that time. If every
+other subscription is exhausted or unverified, nothing changes and you are
+notified. `.usage-data/auto-switch.json` holds session IDs, times and account
+labels only, never credentials.
+
 ### File format, locks and failure handling
 
 The switch uses Claude Code's own short-lived mkdir locks, never steals one,
@@ -757,7 +799,8 @@ Inside it (`0600` files): `accounts.json` (labels and plans, no credentials),
 `vault.json` (encrypted access-token vault), `renewal.json` (encrypted grants),
 `renewal-status.json` and the stop/lock markers, `switch-backup.json` (encrypted
 undo record), imported snapshots, `quota-cache/` (parsed metrics only), and
-`vault-rekey.json` only during an interrupted password change.
+`auto-switch.json` (automatic-switch queue and history, no credentials) with its
+lock files, and `vault-rekey.json` only during an interrupted password change.
 
 Outside it, QuotaHop may create:
 
@@ -766,7 +809,9 @@ Outside it, QuotaHop may create:
 - the autostart login item `${XDG_CONFIG_HOME:-~/.config}/autostart/quotahop-renewal.desktop`
   and a vault-key item in the login keyring, only after `--background enable-autostart`;
 - Claude Code's two auth fields in `~/.claude/.credentials.json` and `~/.claude.json`,
-  only on an explicit switch or undo.
+  only on a switch or undo (explicit, or automatic after `--auto-switch enable`);
+- one `StopFailure` hook entry in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`),
+  only after `--auto-switch enable`; `disable` removes just that entry.
 
 ## Security and verification
 

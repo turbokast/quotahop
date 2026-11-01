@@ -334,7 +334,7 @@ def validate_accounts(value):
         ident = account["id"]
         if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", ident):
             raise UsageError("Account IDs must use lowercase letters, digits, and hyphens.")
-        if ident in {"accounts", "vault", "vault-rekey", "switch-backup", "renewal", "renewal-status", "renewal-stop", "renewal-lock", "panel-lock"} or ident in seen:
+        if ident in {"accounts", "vault", "vault-rekey", "switch-backup", "renewal", "renewal-status", "renewal-stop", "renewal-lock", "panel-lock", "auto-switch"} or ident in seen:
             raise UsageError("Account IDs must be unique and cannot use reserved storage names.")
         seen.add(ident)
         account["name"] = clean_text(account["name"])
@@ -470,7 +470,7 @@ def percent(value):
     return "—" if value is None else f"{value:g}%"
 
 
-def report(accounts, store, now, entries=None):
+def report(accounts, store, now, entries=None, fresh=frozenset()):
     results = []
     entries = entries or {}
     seen = set()
@@ -501,7 +501,8 @@ def report(accounts, store, now, entries=None):
                 cached, checked = False, None
                 if provider == "claude":
                     import quota_cache
-                    parsed, checked, cached = quota_cache.fetch(store, account["id"], entries[account["id"]], seen)
+                    parsed, checked, cached = quota_cache.fetch(store, account["id"], entries[account["id"]], seen,
+                                                                       fresh=account["id"] in fresh)
                 else:
                     raw = live_usage.fetch(entries[account["id"]], seen, provider)
                 if owned_muse:
@@ -1002,6 +1003,10 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     actions.add_argument("--remove", metavar="ACCOUNT", help="remove a row, its captured token, renewal grant and snapshot")
     actions.add_argument("--switch", metavar="ACCOUNT", help="switch shared Claude Code subscription auth; preserve Design/MCP and other settings")
     actions.add_argument("--switch-next", action="store_true", help="switch Claude to the best available subscription using the report ranking")
+    actions.add_argument("--auto-switch", choices=("enable", "disable", "status", "run", "hook", "worker"),
+                         metavar="{enable,disable,status,run}",
+                         help="when a Claude Code session hits a usage limit, switch to the next subscription and ask stopped "
+                              "sessions to resume: enable/disable the Claude Code hook, show status, or run queued work now")
     actions.add_argument("--undo-switch", action="store_true", help="restore previous shared Claude Code auth from the encrypted undo record")
     actions.add_argument("--import-muse", metavar="ACCOUNT_ID", help="import a historical Muse usage/read export from stdin")
     actions.add_argument("--muse-cli-current", action="store_true",
@@ -1060,6 +1065,23 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
             data = sort_report(data, args.sort, args.reverse)
             print(json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) if args.json else render(data, dt.datetime.now(UTC), verbose=args.verbose, color=color_enabled(args.color)))
             return 0 if data["live"] else 1
+        if args.auto_switch == "hook":
+            # Fire-and-forget from Claude Code: never prompt, print or fail it.
+            try:
+                import auto_switch
+                raw = sys.stdin.buffer.read(auto_switch.MAX_HOOK_INPUT + 1)
+                with Store(args.data_dir) as store:
+                    auto_switch.hook(store, args.data_dir, raw)
+            except Exception:
+                pass
+            return 0
+        if args.auto_switch in ("enable", "disable"):
+            import auto_switch
+            with Store(args.data_dir) as store:
+                validate_accounts(store.read("accounts.json"))
+            result = auto_switch.enable(args.data_dir) if args.auto_switch == "enable" else auto_switch.disable()
+            print(json.dumps(result, ensure_ascii=False) if args.json else result["message"])
+            return 0
         with Store(args.data_dir, create=args.setup, maintenance=args.change_password) as store:
             if args.change_password:
                 import vault_password
@@ -1111,6 +1133,17 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                     result = auth_renewal.forget(store, accounts, args.auth_forget, args.plan)
                 print(json.dumps(result, ensure_ascii=False) if args.json else auth_renewal.render_status(result))
                 return 1 if result.get("background_error") else 0
+            if args.auto_switch:
+                import auto_switch
+                if args.auto_switch == "status":
+                    result = auto_switch.status(store)
+                    print(json.dumps(result, ensure_ascii=False) if args.json else auto_switch.render_status(result))
+                    return 0
+                worker = args.auto_switch == "worker"
+                result = auto_switch.run(store, accounts, interactive=not worker,
+                                         settle=auto_switch.SETTLE_SECONDS if worker else 0)
+                print(json.dumps(result, ensure_ascii=False) if args.json else result["message"])
+                return 0 if result["outcome"] in ("idle", "switched", "resumed", "not_at_limit", "busy") else 1
             if args.switch is not None or args.undo_switch or args.switch_next:
                 import claude_switch
                 if not args.json:

@@ -19,7 +19,7 @@ live access for any particular account.
 | Browser `claude.ai/api/organizations/{id}/usage` | Cookie-authenticated, undocumented. Not implemented. |
 | Settings → Usage | The official UI for individual subscription meters. |
 | [Claude Code Analytics API](https://platform.claude.com/docs/en/manage-claude/claude-code-analytics-api) | Daily aggregates with delayed availability; not live remaining quota, and API spend is not seat utilisation. |
-| [Status-line `rate_limits`](https://code.claude.com/docs/en/statusline#rate-limit-usage) | Values supplied to a session after a model response; not an on-demand query. QuotaHop installs no hook and never generates a response to obtain them. |
+| [Status-line `rate_limits`](https://code.claude.com/docs/en/statusline#rate-limit-usage) | Values supplied to a session after a model response; not an on-demand query. QuotaHop never generates a response to obtain them; its only hook is the opt-in `--auto-switch` `StopFailure` hook below, which reads no usage values. |
 
 The usage endpoint and its headers were first documented in the open-source
 [claude-tracker](https://github.com/DSado88/claude-tracker) (commit
@@ -209,6 +209,19 @@ stop renewal. A refusal before any process starts raises a preflight error: the
 refresh token was never sent, so renewal pauses as `blocked` and retries every ten
 minutes rather than suspending. Any failure after a request may have been sent
 suspends the grant, since a lost response can hide a successful rotation.
+
+## Automatic switching trigger (Claude Code 2.1.316, inspected as data)
+
+Claude Code defines a `StopFailure` hook event that "fires instead of Stop when
+an API error (rate limit, auth failure, etc.) ended the turn"; it is
+fire-and-forget (output and exit code ignored) and its matcher field is `error`.
+An HTTP 429 carrying subscription rate-limit information, including the
+"usage limit reached" case, maps to `error: "rate_limit"`; `billing_error` is
+also matched. Because a 429 can also be a short-lived throttle, the hook is only
+a trigger: QuotaHop switches only after a fresh usage check shows the current
+login exhausted or under 5% headroom. Herdr 0.9.1's `agent list` reports each
+Claude pane's session ID (`agent_session.value`), which is how stopped sessions
+are found and prompted with `agent prompt`.
 
 ## Claude renewal ownership
 

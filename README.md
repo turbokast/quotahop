@@ -18,6 +18,7 @@ Runs locally on Ubuntu. No inference requests, hosted service, or telemetry.
 - **Private accounts.** An encrypted vault, five-minute unlock cache, and separate entries for personal and Team subscriptions sharing an email.
 - **Optional renewal.** A background worker keeps independently held Claude and Codex logins alive and returns the login you switch away from to its own renewal.
 - **Explicit switching.** Preview, switch, and undo Claude subscription changes while preserving unrelated configuration.
+- **Optional auto-switch.** When a Claude Code session hits a usage limit, switch to the next subscription and ask stopped sessions to resume.
 
 [Quick start](#quick-start) · [Everyday commands](#everyday-commands) · [Herdr plugin](#herdr-plugin) · [Renewal](#independent-sign-in-and-renewal) · [Full guide](USAGE.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md)
 
@@ -86,6 +87,7 @@ make once in Claude Code can also become renewable without enrollment (see
 ./quotahop --remove 'you@example.com' --plan team_premium
 ./quotahop --change-password        # Preserve credentials; choose a new password
 ./quotahop --lock                   # Lock panels, stop renewal until --background start, clear the cached unlock
+./quotahop --auto-switch enable     # Switch automatically when a session hits a limit
 ./quotahop --help                   # Alphabetical options and examples
 ./quotahop --data-dir DIR --setup   # Keep data in another private (0700) directory
 ```

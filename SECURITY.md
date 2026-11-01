@@ -42,6 +42,14 @@ release branches at present.
   provider authentication. Explicit Claude switches, including a confirmed panel
   action, modify the shared subscription login; isolated enrollment owns its
   separate grants. See [USAGE.md](USAGE.md) for the precise boundaries.
+- **Optional automatic switching** (`--auto-switch enable`) adds one
+  `StopFailure` hook to Claude Code's `settings.json`. The hook only queues a
+  session ID; a detached worker then switches without a prompt, so it uses the
+  vault key only if it is already available unattended (the five-minute unlock
+  cache or the opt-in login keyring), never a passphrase. It switches only after
+  a fresh usage check shows the current login at its limit, is capped at three
+  switches per 30 minutes, and types a fixed resume message into the stopped
+  sessions' Herdr panes. `auto-switch.json` holds no credentials.
 - Each Claude grant has exactly one renewal owner. An explicit switch gives the
   target's full grant to Claude Code, which renews it while active; while holding
   Claude Code's refresh locks, QuotaHop takes the outgoing login back from Claude

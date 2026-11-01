@@ -53,6 +53,20 @@ class QuotaCacheTests(unittest.TestCase):
             for entry in self.entries.values():
                 self.assertNotIn(entry['access_token'], path.read_text())
 
+    def test_fresh_check_bypasses_reuse_for_named_accounts_only(self):
+        self.report()
+        rows = app.report(self.accounts, self.store, dt.datetime.now(app.UTC), self.entries, fresh={'max-1'})['accounts']
+        self.assertEqual(self.network.call_count, 8)
+        self.assertEqual([r['status'] for r in rows], ['live'] + ['recent'] * 6)
+
+    def test_fresh_check_still_honours_cooldown(self):
+        self.network.side_effect = live.LiveError('rate_limited', 'slow down', retry_after=600)
+        self.report()
+        calls = self.network.call_count
+        row = app.report(self.accounts[:1], self.store, dt.datetime.now(app.UTC), self.entries, fresh={'max-1'})['accounts'][0]
+        self.assertEqual(self.network.call_count, calls)
+        self.assertEqual(row['error_code'], 'rate_limited')
+
     def test_cache_expires_and_identity_rotation_never_reuses_another_grant(self):
         first = self.report()
         self.entries['max-1']['access_token'] += '-REPLACED'
