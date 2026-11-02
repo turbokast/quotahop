@@ -154,22 +154,20 @@ can exit 0, so scripts should inspect `live`, not just the exit status.
 
 ```sh
 ./quotahop --remove 'you@example.com'
-./quotahop --remove 'you@example.com' --plan codex
-./quotahop --remove muse-1
 ```
 
 Removal deletes the entry from configuration, its saved credential and renewal
 grant from the encrypted stores, and any imported snapshot. It never contacts a
 provider or changes provider login files. A vault unlock may be required.
-Ambiguous names/emails are rejected; use `--plan` or the unique `id` from
-`--json`. For a current-Muse-CLI row use its configured name or ID, since its
-live email is not saved.
+When the email has several subscriptions, a picker asks which one (see
+[choosing a subscription](#choosing-a-subscription)). For a current-Muse-CLI
+row use its configured name, since its live email is not saved.
 
 Identity labels take precedence over configured fallback names. Plans are
 `max_20x`, `team_premium`, `codex`, and `muse_code`. Claude plan labels are
 unverified; Codex returns its plan. Team seats each require their own
 credentials; a Team organisation ID or owner login is not a substitute. Historical
-snapshots from earlier versions remain available with `--import ACCOUNT_ID`;
+snapshots from earlier versions remain available with `--import EMAIL`;
 they show `SNAPSHOT` and never count as live.
 
 ## Side panel
@@ -224,13 +222,32 @@ Warnings at the foot of the summary:
 | `! Renewal stopped (n): re-enroll` | n grants are `suspended`; see [recovery](#recovery-and-re-enrollment). |
 | `! CLI sync: …` | Following Claude Code's renewed token failed for a reason that will not resolve itself. |
 
+## Choosing a subscription
+
+Every account command takes the **email** that identifies the subscription:
+`--capture`, `--remove`, `--switch`, `--add`, `--auth-enroll`, `--reauth`,
+`--auth-forget`, `--import` and `--import-muse`. When one email has several
+subscriptions (a personal Max plan and a Team seat, say), QuotaHop asks:
+
+```text
+This email matches 2 subscriptions. Which one?
+❯ you@example.com · Max 20×
+  you@example.com · Team Premium
+↑/↓ move · Enter choose · Esc cancel
+```
+
+Esc, `q` or Ctrl-C cancels and changes nothing. `--add EMAIL`, and a capture of
+a new email, ask for the plan the same way. The picker draws on the terminal
+itself, so `--json` output stays clean. Without a terminal (scripts, cron) the
+command lists the choices and refuses; scripts can answer with `--plan PLAN`.
+Internal row IDs from `--json` are still accepted but never needed.
+
 ## Capture by account identity
 
 While the desired account is signed in through your normal workflow:
 
 ```sh
-./quotahop --capture claude --plan team_premium
-./quotahop --capture claude --plan max_20x
+./quotahop --capture claude
 ./quotahop --capture codex
 ```
 
@@ -244,17 +261,16 @@ Distinct Codex workspace routing IDs are never merged just because they share
 an email.
 
 **Personal Max and a Team seat can share the same email.** Capture each while
-that subscription is the current Claude login, specifying its plan:
+that subscription is the current Claude login, and pick its plan when asked:
 
 ```sh
-./quotahop --capture 'you@example.com' --plan max_20x
+./quotahop --capture 'you@example.com'      # choose Max 20×
 # Switch to your Team subscription using your normal login workflow, then:
-./quotahop --capture 'you@example.com' --plan team_premium
+./quotahop --capture 'you@example.com'      # choose Team Premium
 ```
 
-These create separate rows with separate copied access tokens. Recapture with the
-same `--plan` to update only that subscription. An email shared by both rows
-requires `--plan` or a unique saved ID. The same token cannot be captured as two
+These create separate rows with separate copied access tokens. Recapturing asks
+which of the two to update. The same token cannot be captured as two
 subscriptions. If an earlier capture overwrote one, recapture each subscription;
 a replaced token cannot be recovered.
 
@@ -262,16 +278,14 @@ You can also select a saved account by email/name, or supply one for a new accou
 
 ```sh
 ./quotahop --capture 'you@example.com'
-./quotahop --capture 'you@example.com' --plan team_premium
-./quotahop --capture 'Work account' --plan codex
 ```
 
-For a new email/name, specify `--plan`. If local identity is available, its email
+A new email asks for its plan. If local identity is available, its email
 takes precedence over a supplied display name; a supplied email that disagrees
 is refused. If identity is missing, your supplied name/email is used as the
 label, or use `--name 'Work account'` with a provider selector. Plan labels for
-Claude remain user-supplied. Ambiguity within the same plan requires a unique
-saved ID. Capturing by an existing ID cannot change its subscription type.
+Claude remain user-supplied. Capturing into an existing subscription cannot
+change its subscription type.
 
 **Captures copy access tokens only.** A capture never saves or uses a refresh
 token, never runs the provider CLI, and never changes the source credentials.
@@ -353,7 +367,7 @@ expiry or revocation; for a renewable login use
 ## Muse Code — current CLI login, no setup
 
 To include the current Muse CLI login in the combined report, run
-`./quotahop --add muse-current --plan muse_code --name Muse`, then add
+`./quotahop --add 'you@example.com'` and choose Muse Code, then add
 `"source": "cli_current"` to that row in `.usage-data/accounts.json`, preserving
 its private permissions. The configuration holds labels, never credentials. The
 row follows whichever Muse login is current. To check only Muse:
@@ -409,7 +423,7 @@ non-interactively and must be in the returned list), checks that team's quota,
 and encrypts the cookie with its identity/team binding. Setup performs three
 GETs. To reuse the `muse-1` row instead of adding a portal row, remove its
 `source: cli_current` setting first. Add further subscriptions with
-`./quotahop --capture 'second@example.com' --plan muse_code`.
+`./quotahop --capture 'second@example.com'` and choose Muse Code.
 
 Each later check verifies the saved identity and reads the selected team's quota
 once. The cookie is reusable until it expires or is revoked; re-run capture then.
@@ -460,7 +474,7 @@ because only Claude is switched.
 ./quotahop --switch-next --dry-run
 ./quotahop --switch-next --plan team_premium
 # Choose a specific subscription yourself:
-./quotahop --switch 'you@example.com' --plan max_20x
+./quotahop --switch 'you@example.com'      # picker if the email has several subscriptions
 ./quotahop --switch team-1
 # Validate the target without changing Claude files:
 ./quotahop --switch team-1 --dry-run
@@ -541,7 +555,7 @@ outgoing refresh token when present, solely for restoration, and never contains
 Design or MCP credentials. `--undo-switch` makes no network request and restores
 only those two fields. It refuses if a later login changed the installed access
 token, and refuses if QuotaHop again holds the saved refresh token
-(`Use --switch ACCOUNT instead`): the record's copy goes stale once QuotaHop
+(`Use --switch EMAIL instead`): the record's copy goes stale once QuotaHop
 renews that grant. A successful undo deletes the record; another switch replaces
 it. Reports never read it. Nothing is revoked server-side.
 
@@ -643,17 +657,13 @@ substitute key re-minting. Muse reports `reauth_required` at expiry.
 Enroll each saved account once. Successful enrollment starts the worker:
 
 ```sh
-./quotahop --auth-enroll 'you@example.com' --plan max_20x
-./quotahop --auth-enroll 'you@example.com' --plan team_premium
-./quotahop --auth-enroll 'you@example.com' --plan codex
-./quotahop --auth-enroll muse-1
+./quotahop --auth-enroll 'you@example.com'
 ./quotahop --background status
 ```
 
-`--plan` is optional when an email, name, or ID identifies exactly one saved
-subscription; for an email shared by Max and Team, give `--plan` or the unique ID
-(`--auth-enroll team-2`). An ambiguous match is rejected before any worker is
-stopped. For a new row use `--add ID --plan PLAN --name EMAIL` first. Claude uses
+When the email has several subscriptions, the [picker](#choosing-a-subscription)
+asks which one before any worker is stopped. For a new subscription run
+`--add EMAIL` first. Claude uses
 its native browser/code sign-in; Codex and Muse display device sign-in
 instructions. Complete each with the intended account and organisation: existing
 email, workspace and organisation bindings must match, and same-email Max and
@@ -739,18 +749,23 @@ tokens) shows the last observation; a stopped worker does not renew.
 
 ### Recovery and re-enrollment
 
-Re-enroll only for `suspended` or `reauth_required`, or when a refresh token is
-expired or revoked. **An `EXPIRED` access token on a maintained grant recovers on
-its own** once the worker runs; do not re-enroll for it.
+Sign in again only for `suspended` or `reauth_required`, or when a refresh token
+is expired or revoked. **An `EXPIRED` access token on a maintained grant recovers
+on its own** once the worker runs; do not sign in again for it.
 
 ```sh
-./quotahop --background stop
-./quotahop --auth-forget 'you@example.com' --plan codex
-./quotahop --auth-enroll 'you@example.com' --plan codex
+./quotahop --reauth 'you@example.com'
 ```
 
-Forget deletes only the local renewable grant, retaining its last access token;
-it never logs out or revokes a provider session. `--remove` also deletes the
+`--reauth` pauses the worker, runs a fresh sign-in, and replaces the old grant
+only after the new one succeeds and matches the same account; a cancelled or
+failed sign-in leaves the old grant untouched. The worker then restarts. It
+refuses a Claude login that Claude Code currently holds (switch Claude Code to
+another subscription first). It never logs out or revokes the old session.
+
+To drop renewal for a subscription without signing in again, use
+`--auth-forget EMAIL`. Forget deletes only the local renewable grant, retaining
+its last access token; it never logs out or revokes a provider session. `--remove` also deletes the
 grant. Capture refuses to overwrite an enrolled account until it is forgotten.
 
 Refreshes are serialised. An encrypted in-flight marker is saved before calling

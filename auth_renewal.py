@@ -46,7 +46,7 @@ NETWORK_TIMEOUT = 5
 RESERVED = {'renewal', 'renewal-status', 'renewal-stop', 'renewal-lock'}
 BACKENDS = {'codex': owned_codex, 'claude': owned_claude, 'muse_code': owned_muse}
 ORIGINS = {'codex': 'isolated-codex-device-v1', 'claude': owned_claude.ORIGIN, 'muse_code': owned_muse.ORIGIN}
-LIMITATIONS = {provider: 'Requires a fresh independent sign-in with --auth-enroll ACCOUNT; captured CLI grants are never renewed.' for provider in BACKENDS}
+LIMITATIONS = {provider: 'Requires a fresh independent sign-in with --auth-enroll EMAIL; captured CLI grants are never renewed.' for provider in BACKENDS}
 LIMITATIONS['muse_code'] = 'Independent sign-in and expiry tracking supported; Muse device-token renewal is unavailable. Re-enroll when expired.'
 
 
@@ -71,7 +71,7 @@ def notify_suspended(names):
     import desktop_notify
     desktop_notify.send('QuotaHop renewal stopped',
                         f"Renewal stopped for {', '.join(sorted(names))}: the outcome of a renewal is uncertain, so QuotaHop "
-                        "will not retry it. Re-enroll with: quotahop --auth-enroll ACCOUNT --plan PLAN")
+                        "will not retry it. Sign in again with: quotahop --reauth EMAIL")
 
 
 def provider_for(account):
@@ -212,13 +212,8 @@ def unlock(store):
 
 
 def choose(accounts, entries, selector, plan=None):
-    from claude_usage import UsageError
-    candidates = [a for a in accounts if plan is None or a['plan'] == plan]
-    matches = [a for a in candidates if a['id'] == selector] or [a for a in candidates if selector.casefold() in [
-        a['name'].casefold(), *[v.casefold() for v in account_identity.saved(entries.get(a['id'], {})).values()]]]
-    if len(matches) != 1:
-        raise UsageError('Select one saved account by email/name or ID; use --plan to disambiguate. Add a new row with --add first.')
-    return matches[0]
+    import account_picker
+    return account_picker.match(accounts, entries, selector, plan)
 
 
 def digest(entry):
@@ -277,7 +272,17 @@ def forget_locked(store, key, ident):
         store.write(REGISTRY, seal(saved, key), replace=True)
 
 
-def enroll(store, accounts, selector, plan=None, *, unlock_key=None):
+def check_replaceable(store, key, account, replace):
+    item = records(store, key).get(account['id'])
+    if item is None:
+        return
+    if not replace:
+        raise live.LiveError('already_enrolled', 'Already enrolled. To sign in again, use --reauth EMAIL.')
+    if item['state'] == 'cli_owned':
+        raise live.LiveError('cli_owned', 'Claude Code holds and renews this login right now. Switch Claude Code to another subscription first, then sign in again.')
+
+
+def enroll(store, accounts, selector, plan=None, *, unlock_key=None, replace=False):
     from claude_usage import validate_accounts
     # One owner for every grant. Enrollment cannot race the background worker.
     with worker_lock(store):
@@ -286,8 +291,8 @@ def enroll(store, accounts, selector, plan=None, *, unlock_key=None):
                                   live.unlock_vault(store.read('vault.json'), None, key=unlock_key))
             account = choose(accounts, entries, selector, plan)
             provider = provider_for(account)
-            if enrolled(store, key, account['id']):
-                raise live.LiveError('already_enrolled', 'Already enrolled. To sign in again, use --auth-forget ACCOUNT first.')
+            check_replaceable(store, key, account, replace)
+            replaced = records(store, key).get(account['id'])
             previous = entries.get(account['id'], {})
             # Enrollment establishes a NEW independent grant, so an expired or
             # revoked capture must never be needed to authorize it. The native
@@ -317,7 +322,11 @@ def enroll(store, accounts, selector, plan=None, *, unlock_key=None):
                     for other, value in current.items()):
                 raise live.LiveError('duplicate_account', 'This Claude account and organisation are already saved under another entry; nothing replaced.')
             saved = records(store, key)
+            if saved.get(account['id']) != replaced:
+                raise live.LiveError('account_changed', 'Renewal state changed during sign-in; new login discarded.')
             now = time.time()
+            # A re-enrollment replaces the old grant only now, after the new
+            # sign-in succeeded: a failed or cancelled sign-in keeps it.
             saved[account['id']] = {'origin': ORIGINS[provider], 'auth': auth, 'entry': entry,
                 'state': 'ready', 'next_at': entry['expires_at'] - (0 if provider == 'muse_code' else 300), 'published': digest(previous), 'updated_at': now}
             if provider == 'claude':
@@ -332,7 +341,7 @@ def enroll(store, accounts, selector, plan=None, *, unlock_key=None):
         return {'message': message, 'account_id': account['id']}
 
 
-def enroll_and_start(store, data_dir, accounts, selector, plan=None):
+def enroll_and_start(store, data_dir, accounts, selector, plan=None, *, replace=False):
     """One unlock for enrollment and startup, including long interactive logins.
 
     Stop a prior worker before taking ownership of grants. Failed/cancelled
@@ -341,13 +350,12 @@ def enroll_and_start(store, data_dir, accounts, selector, plan=None):
     with vault_lock(store, timeout=40):
         entries, key, _ = unlock(store)
         account = choose(accounts, entries, selector, plan)
-        if enrolled(store, key, account['id']):
-            raise live.LiveError('already_enrolled', 'Already enrolled. To sign in again, use --auth-forget ACCOUNT first.')
+        check_replaceable(store, key, account, replace)
     was_running = running(store)
     if was_running:
         stop(store)
     try:
-        result = enroll(store, accounts, selector, plan, unlock_key=key)
+        result = enroll(store, accounts, account['id'], plan, unlock_key=key, replace=replace)
     except BaseException:
         if was_running:
             try:
@@ -393,7 +401,7 @@ def public_status(accounts, saved, *, active=False):
                      'message': (BLOCKED[item['blocked']] if state == 'blocked' else
                                  'Active in Claude Code, which renews it. QuotaHop takes it back automatically when Claude Code switches away.' if state == 'cli_owned'
                                  else 'Older grant awaiting a check of the current Claude login; renewal resumes once the background worker confirms Claude Code does not hold it.' if state == 'legacy_hold'
-                                 else 'Renewal outcome uncertain: re-enroll; automatic retries disabled.' if state in ('in_flight', 'suspended')
+                                 else 'Renewal outcome uncertain: sign in again with --reauth EMAIL; automatic retries disabled.' if state in ('in_flight', 'suspended')
                                  else LIMITATIONS[provider] if provider == 'muse_code' else 'Independent grant; renews five minutes before expiry.' if item else LIMITATIONS[provider])})
     return {'running': active, 'checked_at': time.time(), 'ownership_version': 2, 'accounts': rows}
 

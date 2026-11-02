@@ -20,6 +20,22 @@ EMAIL = "alice@example.test"
 TOKEN = "FAKE-CLAUDE-ACCESS-TOKEN"
 
 
+
+_no_terminal = []
+
+
+def setUpModule():
+    # Never open an interactive picker on the developer's terminal.
+    from unittest.mock import patch as _patch
+    patcher = _patch('account_picker.interactive', return_value=False)
+    patcher.start()
+    _no_terminal.append(patcher)
+
+
+def tearDownModule():
+    while _no_terminal:
+        _no_terminal.pop().stop()
+
 def codex_token(email=EMAIL):
     claims = {"https://api.openai.com/profile": {"email": email, "name": "Alice Example"}, "exp": 2000000000}
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
@@ -196,7 +212,7 @@ class CaptureIdentityTests(unittest.TestCase):
         self.metadata.unlink()
         code, out = self.cli("--capture", "claude", "--plan", "team_premium", "--credential-file", str(self.source), "--json")
         self.assertEqual(code, 2)
-        self.assertIn("No account name/email", out)
+        self.assertIn("No account email is available", out)
         code, out = self.cli("--capture", "claude", "--plan", "team_premium", "--name", "Alice Work", "--credential-file", str(self.source))
         self.assertEqual(code, 0, out)
         self.assertIn("Alice Work", out)

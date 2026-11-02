@@ -19,6 +19,22 @@ REFRESH = "FAKE-REFRESH-NEVER-COPY"
 PASSWORD = b"fake-private-vault-passphrase"
 
 
+
+_no_terminal = []
+
+
+def setUpModule():
+    # Never open an interactive picker on the developer's terminal.
+    from unittest.mock import patch as _patch
+    patcher = _patch('account_picker.interactive', return_value=False)
+    patcher.start()
+    _no_terminal.append(patcher)
+
+
+def tearDownModule():
+    while _no_terminal:
+        _no_terminal.pop().stop()
+
 def codex_payload():
     return {"plan_type": "pro", "rate_limit": {
         "primary_window": {"used_percent": 23, "limit_window_seconds": 18000, "reset_at": 1900000000},
@@ -157,12 +173,17 @@ class ProviderStorageTests(unittest.TestCase):
             code = app.main(["--jobs", "1", "--data-dir", str(self.directory), *args])
         return code, out.getvalue(), err.getvalue()
 
+    def added(self, email, plan):
+        accounts = json.loads((self.directory / "accounts.json").read_text())["accounts"]
+        return next(a["id"] for a in accounts if a["name"] in (email, "My Codex") and a["plan"] == plan)
+
     def test_capture_codex_private_read_only_and_backward_compatible_vault(self):
-        self.assertEqual(self.cli("--add", "codex-1", "--plan", "codex", "--name", "My Codex")[0], 0)
+        self.assertEqual(self.cli("--add", "codex@example.test", "--plan", "codex", "--name", "My Codex")[0], 0)
+        codex_id = self.added("codex@example.test", "codex")
         os.utime(self.source, ns=(1000000000, 2000000000))
         before = self.source.stat()
         with patch("live_usage.passphrase", return_value=PASSWORD), patch("socket.socket") as network:
-            code, _, _ = self.cli("--capture", "codex-1", "--credential-file", str(self.source))
+            code, _, _ = self.cli("--capture", codex_id, "--credential-file", str(self.source))
             self.assertEqual(code, 0)
             network.assert_not_called()
         after = self.source.stat()
@@ -170,7 +191,7 @@ class ProviderStorageTests(unittest.TestCase):
                          (after.st_atime_ns, after.st_mtime_ns, after.st_ino, after.st_mode))
         with app.Store(self.directory) as store:
             entries, key, salt = live.unlock_vault(store.read("vault.json"), PASSWORD)
-            self.assertEqual(entries["codex-1"], {**entry(), "identity": {"name": "My Codex"}})
+            self.assertEqual(entries[codex_id], {**entry(), "identity": {"name": "My Codex"}})
             entries["max-1"] = {"access_token": "FAKE-OLD-CLAUDE-TOKEN", "expires_at": None}
             self.assertEqual(live.unlock_vault(live.encrypt_vault(entries, key, salt), PASSWORD)[0], entries)
         raw = (self.directory / "vault.json").read_bytes()
@@ -190,9 +211,10 @@ class ProviderStorageTests(unittest.TestCase):
             live.read_access_token(self.source, "codex")
 
     def test_add_multi_provider_report_once_no_processes_or_polling(self):
-        for ident, plan in (("codex-1", "codex"), ("codex-2", "codex"), ("muse-1", "muse_code")):
-            self.assertEqual(self.cli("--add", ident, "--plan", plan)[0], 0)
-        entries = {"codex-1": entry(), "codex-2": {**entry(), "access_token": TOKEN + "2", "account_id": "fake-other"}}
+        for email, plan in (("one@example.test", "codex"), ("two@example.test", "codex"), ("muse@example.test", "muse_code")):
+            self.assertEqual(self.cli("--add", email, "--plan", plan)[0], 0)
+        entries = {self.added("one@example.test", "codex"): entry(),
+                   self.added("two@example.test", "codex"): {**entry(), "access_token": TOKEN + "2", "account_id": "fake-other"}}
         with contextlib.ExitStack() as stack:
             for target in ("subprocess.Popen", "os.fork", "os.system", "threading.Thread.start", "time.sleep"):
                 stack.enter_context(patch(target, side_effect=AssertionError("Background work prohibited")))
@@ -212,13 +234,13 @@ class ProviderStorageTests(unittest.TestCase):
         self.assertNotIn("fake-workspace", out)
 
     def test_muse_capture_does_not_read_credentials_and_import_stays_historical(self):
-        self.cli("--add", "muse-1", "--plan", "muse_code")
+        self.cli("--add", "muse@example.test", "--plan", "muse_code")
         with patch.object(live, "read_access_token") as read, patch("socket.socket") as network:
-            self.assertEqual(self.cli("--capture", "muse-1", "--credential-file", str(self.source))[0], 2)
+            self.assertEqual(self.cli("--capture", "muse@example.test", "--credential-file", str(self.source))[0], 2)
             read.assert_not_called()
             network.assert_not_called()
         exported = {"usage": {"observedAtMs": 1700000000000, "weekly": {"usedPercent": 44}}}
-        self.assertEqual(self.cli("--import-muse", "muse-1", stdin=json.dumps(exported).encode())[0], 0)
+        self.assertEqual(self.cli("--import-muse", "muse@example.test", stdin=json.dumps(exported).encode())[0], 0)
         _, out, _ = self.cli("--json")
         muse = json.loads(out)["accounts"][-1]
         self.assertEqual(muse["status"], "snapshot")
@@ -227,7 +249,8 @@ class ProviderStorageTests(unittest.TestCase):
 
     def test_bad_add_preserves_config_and_muse_stores_protected(self):
         before = (self.directory / "accounts.json").read_bytes()
-        for args in (("--add", "max-1", "--plan", "codex"), ("--add", "../oops", "--plan", "codex"), ("--add", "codex-1")):
+        for args in (("--add", "max-1", "--plan", "codex"), ("--add", "../oops", "--plan", "codex"),
+                     ("--add", "new@example.test")):  # no terminal for the plan picker
             self.assertEqual(self.cli(*args)[0], 2)
             self.assertEqual((self.directory / "accounts.json").read_bytes(), before)
         with self.assertRaises(app.UsageError):

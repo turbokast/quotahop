@@ -58,12 +58,14 @@ def select(accounts, entries, selector, plan):
     reject_secrets(selector)
     if plan not in (None, "max_20x", "team_premium"):
         fail("--switch supports Claude subscriptions only; Codex and Muse authentication is never changed.")
-    candidates = [a for a in accounts if plan is None or a["plan"] == plan]
-    matches = [a for a in candidates if a["id"] == selector] or [a for a in candidates if selector.casefold() in [
-        a["name"].casefold(), *[v.casefold() for v in account_identity.saved(entries.get(a["id"], {})).values()]]]
-    if len(matches) != 1:
-        fail("Select one saved account by name/email or ID. For a shared email, add --plan max_20x or --plan team_premium.")
-    account = matches[0]
+    import account_picker
+    from claude_usage import UsageError
+    try:
+        account = account_picker.match(accounts, entries, selector, plan)
+    except account_picker.Ambiguous:
+        raise
+    except UsageError as exc:
+        fail(str(exc))
     entry = entries.get(account["id"])
     if account["plan"] not in ("max_20x", "team_premium"):
         fail("Only Claude Code subscriptions can be switched.")
@@ -101,7 +103,7 @@ def target_auth(account, entry, *, profile=None):
         fail("Saved label and token profile belong to different accounts; recapture the intended account.")
     expected = {"max_20x": "claude_max", "team_premium": "claude_team"}[account["plan"]]
     if org.get("organization_type") != expected:
-        fail("Token's subscription type does not match the selected Max/Team row. Recapture it with the correct --plan.")
+        fail("Token's subscription type does not match the selected Max/Team row. Recapture it by email and choose the right subscription.")
     for value in (user.get("uuid"), org.get("uuid")):
         try:
             uuid.UUID(value)
@@ -402,7 +404,7 @@ def switch(store, accounts, selector=None, plan=None, *, dry_run=False, undo=Fal
             if undo and oauth.get("refreshToken") and any(
                     item["auth"].get("claudeAiOauth", {}).get("refreshToken") == oauth["refreshToken"]
                     for item in auth_renewal.records(store, key).values()):
-                fail("The previous login is maintained by QuotaHop again; reinstalling this older copy could sign it out. Use --switch ACCOUNT instead.")
+                fail("The previous login is maintained by QuotaHop again; reinstalling this older copy could sign it out. Use --switch EMAIL instead.")
             if not undo and current["claudeAiOauth"].get("accessToken") == oauth["accessToken"] and handoff is None:
                 return {"message": "This Claude access token is already selected; no files changed.", "account_name": label, "changed": False, **selection}
             # Preflight replacement before storing backup or touching live files.

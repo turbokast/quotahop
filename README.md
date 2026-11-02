@@ -55,8 +55,7 @@ configuration. Capture accounts into those slots, remove unused rows, or add mor
 While the account you want is already signed in through its normal CLI:
 
 ```sh
-./quotahop --capture claude --plan max_20x
-./quotahop --capture claude --plan team_premium
+./quotahop --capture claude
 ./quotahop --capture codex
 ./quotahop
 ```
@@ -64,7 +63,13 @@ While the account you want is already signed in through its normal CLI:
 Each capture reads the **current** login. Switch accounts through your usual
 workflow, then capture again to save another subscription. Names and emails are
 detected where available. Max and Team subscriptions with the same email stay
-separate; use `--plan` when selecting between them.
+separate.
+
+**Every command identifies a subscription by its email.** When one email has
+several subscriptions (say a personal Max plan and a Team seat), QuotaHop shows
+a picker: choose with ↑/↓ and Enter, or Esc to cancel. New subscriptions are
+asked for their plan the same way. Without a terminal, the command lists the
+choices and changes nothing (scripts can answer with `--plan`).
 
 On first capture, **create a vault password** of at least 12 characters. There
 is no default password. Subsequent commands reuse the unlock for five minutes
@@ -84,7 +89,7 @@ make once in Claude Code can also become renewable without enrollment (see
 ./quotahop --verbose                # Exact local resets, model limits and errors
 ./quotahop --json                   # Full structured details, no credentials
 ./quotahop --sort 7d --reverse       # Sort within each provider group
-./quotahop --remove 'you@example.com' --plan team_premium
+./quotahop --remove 'you@example.com'       # Picker if the email has several subscriptions
 ./quotahop --change-password        # Preserve credentials; choose a new password
 ./quotahop --lock                   # Lock panels, stop renewal until --background start, clear the cached unlock
 ./quotahop --auto-switch enable     # Switch automatically when a session hits a limit
@@ -156,7 +161,7 @@ security boundaries and marketplace publication, and the
 ./quotahop --switch-next --dry-run
 ./quotahop --switch-next
 ./quotahop --switch-next --provider claude
-./quotahop --switch 'you@example.com' --plan team_premium
+./quotahop --switch 'you@example.com'
 ./quotahop --undo-switch
 ```
 
@@ -182,7 +187,7 @@ Check your current Muse CLI login without a vault or setup:
 To include it in the combined report:
 
 ```sh
-./quotahop --add muse-current --plan muse_code --name Muse
+./quotahop --add 'you@example.com'      # choose Muse Code
 ```
 
 Add `"source": "cli_current"` to that row in `.usage-data/accounts.json`, retaining
@@ -203,18 +208,14 @@ Claude Code's or Codex's credential files. If isolation cannot be established,
 enrollment fails.
 
 ```sh
-./quotahop --auth-enroll max-1
-./quotahop --auth-enroll team-1
-./quotahop --add codex-work --plan codex --name 'you@example.com'
-./quotahop --auth-enroll codex-work
-./quotahop --add muse-work --plan muse_code --name 'you@example.com'
-./quotahop --auth-enroll muse-work
+./quotahop --add 'you@example.com'           # Asks which plan
+./quotahop --auth-enroll 'you@example.com'   # Picker if the email has several subscriptions
+./quotahop --reauth 'you@example.com'        # Sign in again after renewal stopped
 ./quotahop --background status
 ./quotahop --background stop
 ```
 
-Use a saved ID, email, or name. Add a new row with `--add` first; `--plan` resolves
-ambiguous subscriptions.
+Name the subscription by its email; add a new one with `--add` first.
 
 **Successful enrollment starts a background worker.** Claude and Codex grants
 QuotaHop holds renew before expiry. Muse tracks expiry but cannot automatically
@@ -245,10 +246,11 @@ first. `--background status` shows per-account states (`ready`, `blocked`,
 `cli_owned`, `legacy_hold`, `suspended`, `reauth_required`, `needs_enrollment`;
 see the [state table](USAGE.md#status)).
 
-**When to re-enroll.** Only for `suspended` or `reauth_required` grants, or an
-expired/revoked refresh token: run `--auth-forget ACCOUNT` then
-`--auth-enroll ACCOUNT` (add `--plan` when ambiguous). This does not log out or
-revoke the old session. An `EXPIRED` access token on a maintained grant recovers
+**When to sign in again.** Only for `suspended` or `reauth_required` grants, or an
+expired/revoked refresh token: run `--reauth EMAIL`. It signs in afresh and
+replaces the old grant only once the new sign-in succeeds, so a cancelled or
+failed sign-in leaves everything as it was. It does not log out or revoke the old
+session, and refuses a login Claude Code currently holds (switch away first). An `EXPIRED` access token on a maintained grant recovers
 on its own. `legacy_hold` grants resume renewal once the CLI is confirmed to hold
 a different login.
 

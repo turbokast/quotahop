@@ -21,6 +21,22 @@ TOKEN = "FAKE-SELECTED-CLAUDE-ACCESS"
 EMAIL = "person@example.test"
 
 
+
+_no_terminal = []
+
+
+def setUpModule():
+    # Never open an interactive picker on the developer's terminal.
+    from unittest.mock import patch as _patch
+    patcher = _patch('account_picker.interactive', return_value=False)
+    patcher.start()
+    _no_terminal.append(patcher)
+
+
+def tearDownModule():
+    while _no_terminal:
+        _no_terminal.pop().stop()
+
 def profile(plan="claude_max"):
     return {"account": {"uuid": "00000000-0000-4000-8000-000000000001", "email": EMAIL,
                         "display_name": "Example", "created_at": "2025-01-01T00:00:00Z"},

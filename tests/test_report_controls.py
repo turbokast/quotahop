@@ -19,6 +19,22 @@ NOW = dt.datetime(2026, 10, 13, tzinfo=app.UTC)
 KEY, SALT = b"k" * 32, b"s" * 16
 
 
+
+_no_terminal = []
+
+
+def setUpModule():
+    # Never open an interactive picker on the developer's terminal.
+    from unittest.mock import patch as _patch
+    patcher = _patch('account_picker.interactive', return_value=False)
+    patcher.start()
+    _no_terminal.append(patcher)
+
+
+def tearDownModule():
+    while _no_terminal:
+        _no_terminal.pop().stop()
+
 def row(ident, provider, name, used, reset=None):
     plan = {"claude": "max_20x", "codex": "codex", "muse_code": "muse_code"}[provider]
     usage = app.parse_usage({"five_hour": {"utilization": used, "resets_at": reset},
@@ -281,7 +297,7 @@ class RemovalTests(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(out)["accounts"], [])
         self.assertFalse(json.loads(out)["live"])
-        self.assertEqual(self.run_cli("--add", "new", "--plan", "codex")[0], 0)
+        self.assertEqual(self.run_cli("--add", "new@example.com", "--plan", "codex")[0], 0)
 
     def test_remove_without_vault_needs_no_authentication(self):
         self.store.delete("vault.json")

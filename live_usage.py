@@ -314,15 +314,8 @@ def remove_account(store, selector, *, plan=None, verbose=False):
             envelope, entries = None, {}
         else:
             entries, key, salt = unlock_cached(store, envelope, verbose=verbose)
-        candidates = [a for a in accounts if plan is None or a["plan"] == plan]
-        exact = [a for a in candidates if a["id"] == selector]
-        matches = exact or [a for a in candidates if selector.casefold() in [
-            a["name"].casefold(), *[v.casefold() for v in account_identity.saved(entries.get(a["id"], {})).values()]]]
-        if not matches:
-            raise UsageError("No saved account matches. Use its configured name or ID from --json.")
-        if len(matches) != 1:
-            raise UsageError("Account name/email is ambiguous; specify --plan or use its unique ID from --json.")
-        account = matches[0]
+        import account_picker
+        account = account_picker.match(accounts, entries, selector, plan)
         ident = account["id"]
         # Purge credentials before hiding the row. Failures leave the row available
         # for a retry by ID, rather than silently orphaning a saved credential.
@@ -377,7 +370,7 @@ def capture(store, ident, source, provider="claude", muse_team=None, *, named=Fa
             raise LiveError("duplicate_account", "This login/team is already saved under another account. Select the intended account before capturing.")
         import auth_renewal
         if auth_renewal.enrolled(store, key, ident):
-            raise LiveError("managed_account", "This account has an independent renewal grant. Use --auth-forget ACCOUNT before replacing it with a captured CLI token.")
+            raise LiveError("managed_account", "This account has an independent renewal grant. Use --auth-forget EMAIL before replacing it with a captured CLI token, or --reauth EMAIL to sign in again.")
         entries[ident] = entry
         envelope = encrypt_vault(entries, key, salt)
         store.write("vault.json", envelope, replace=True)

@@ -142,7 +142,7 @@ def choose(accounts, entries, selector, provider, entry, plan=None, name=None):
     aliases = {"claude", "codex", "muse"}
     exact = [a for a in accounts if a["id"] == selector]
     if exact and plan and exact[0]["plan"] != plan:
-        raise UsageError("Selected account has a different subscription type. Capture by email with --plan to save a separate subscription.")
+        raise UsageError("Selected account has a different subscription type. Capture by email to choose or add the right subscription.")
     scope = plan or (exact[0]["plan"] if exact else None)
     candidates = [a for a in accounts if scope is None or a["plan"] == scope]
     matching = exact or [a for a in candidates if (a["name"].casefold() == selector.casefold()
@@ -153,7 +153,8 @@ def choose(accounts, entries, selector, provider, entry, plan=None, name=None):
     existing = [a for a in accounts if (scope is None or a["plan"] == scope)
                 and a["id"] in entries and same_login(entries[a["id"]], entry, provider)]
     if len(matching) > 1 or len(existing) > 1:
-        raise UsageError("Account name/email is ambiguous; specify --plan or use a unique saved ID.")
+        import account_picker
+        raise account_picker.Ambiguous(matching if len(matching) > 1 else existing)
     if matching and existing and matching[0]["id"] != existing[0]["id"]:
         raise UsageError("This login is already captured under another account; use its name/email.")
     account = dict((matching or existing or [{}])[0])
@@ -172,11 +173,12 @@ def choose(accounts, entries, selector, provider, entry, plan=None, name=None):
             raise UsageError("This capture would replace a different saved account. Use the current account's email/name instead.")
     chosen_name = label(identity) or name or (selector if selector not in aliases and not exact else None) or account.get("name")
     if not chosen_name:
-        raise UsageError("No account name/email is available locally. Supply --name or capture an email/name with --plan.")
+        raise UsageError("No account email is available locally. Capture by email instead, or supply --name.")
     chosen_name = clean_text(chosen_name)
     chosen_plan = plan or account.get("plan") or {"codex": "codex", "muse_code": "muse_code"}.get(provider)
     if chosen_plan is None:
-        raise UsageError("For a new Claude account, add --plan max_20x or --plan team_premium.")
+        import account_picker
+        raise account_picker.PlanNeeded(["max_20x", "team_premium"], "New Claude subscription: which plan is it?")
     if PROVIDERS[chosen_plan] != provider:
         raise UsageError("Plan does not match the selected provider.")
     if not account:

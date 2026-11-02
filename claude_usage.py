@@ -25,7 +25,7 @@ PROVIDER_GROUPS = {"codex": "OpenAI", "claude": "Anthropic", "muse_code": "Meta"
 SORT_COLUMNS = ("recommended", "name", "plan", "5h", "7d", "5h-reset", "7d-reset", "status")
 UNSUPPORTED = (
     "No saved access token for this account. While it is your current Claude Code or Codex "
-    "account, run --capture claude --plan team_premium (or max_20x), or --capture codex. No login or refresh is performed."
+    "account, run --capture claude or --capture codex. No login or refresh is performed."
 )
 READ_ONLY_ENDPOINTS = live_usage.READ_ONLY_ENDPOINTS
 UsageClient = live_usage.UsageClient
@@ -937,6 +937,69 @@ class SafeParser(argparse.ArgumentParser):
         raise UsageError("Invalid command arguments. Use --help; never pass credentials.")
 
 
+def add_account(store, accounts, email, plan, name=None):
+    """A new subscription row for this email; its ID is derived, never typed."""
+    import account_picker
+    import hashlib
+    email = clean_text(email)
+    reject_secrets(email)
+    identity = account_identity.extract(email=email)
+    if not identity.get("email"):
+        raise UsageError("--add takes the subscription's email address.")
+    email = identity["email"].lower()
+    if plan is None:
+        raise account_picker.PlanNeeded(list(PLANS), "New subscription: which plan is it?")
+    if any(a["plan"] == plan and email.casefold() in account_picker.emails(a, {}) for a in accounts):
+        raise UsageError(f"{email} already has a {PLANS[plan]} subscription saved.")
+    ident = PROVIDERS[plan].replace("_", "-") + "-" + hashlib.sha256(
+        (email.casefold() + "\0" + plan).encode()).hexdigest()[:16]
+    updated = validate_accounts({"accounts": accounts + [{"id": ident, "name": name or email, "plan": plan}]})
+    store.write("accounts.json", {"accounts": updated}, replace=True)
+    return {"message": f"Added {email} · {PLANS[plan]}. Sign in for background renewal with --auth-enroll {email}, "
+                       "or save the current CLI login with --capture.", "account_id": ident}
+
+
+def capture_account(store, accounts, selector, plan, args):
+    """Save the current CLI login for an email (or claude/codex/muse to detect it)."""
+    import account_picker
+    aliases = {"claude": "claude", "codex": "codex", "muse": "muse_code"}
+    account = {}
+    if selector not in aliases:
+        try:
+            account = account_picker.match(accounts, {}, selector, plan)
+        except UsageError:
+            # Older vaults can show decoded identity before their plain
+            # configuration labels have been renamed by a recapture.
+            try:
+                entries = account_identity.for_report(live_usage.load_vault(store))
+            except FileNotFoundError:
+                entries = {}
+            try:
+                account = account_picker.match(accounts, entries, selector, plan)
+            except UsageError:
+                account = {}
+    provider = (PROVIDERS[plan] if plan else PROVIDERS[account["plan"]] if account else aliases.get(selector))
+    if provider is None:
+        raise account_picker.PlanNeeded(list(PLANS), "New subscription: which plan is it?")
+    if selector in aliases and provider != aliases[selector]:
+        raise UsageError("Plan does not match the selected provider.")
+    if account.get("source") == "cli_current":
+        raise UsageError("This row reads the current Muse CLI login automatically; capture is unnecessary. Remove source from its configuration to use a portal capture instead.")
+    target = account.get("id", selector)
+    if provider == "muse_code":
+        if args.credential_file:
+            raise UsageError("Muse uses a portal cookie entered privately, not a CLI credential file.")
+        captured = live_usage.capture(store, target, None, provider, args.muse_team,
+                                      named=True, plan=plan, name=args.name)
+        return captured, "Meta portal session and selected team saved in encrypted vault. Only portal GETs were performed; no CLI authentication, refresh, or inference."
+    if args.muse_team:
+        raise UsageError("--muse-team requires a Muse Code account.")
+    print(live_usage.CODEX_NOTICE if provider == "codex" else live_usage.NOTICE, file=sys.stderr)
+    captured = live_usage.capture(store, target, (args.credential_file or live_usage.default_source(provider)).expanduser(),
+                                  provider, named=True, plan=plan, name=args.name)
+    return captured, "Access token captured into encrypted vault. Source credentials unchanged; no login, network request, or refresh performed."
+
+
 def main(argv=None):
     parser = SafeParser(
         usage="%(prog)s [ACTION] [OPTIONS]",
@@ -946,13 +1009,14 @@ def main(argv=None):
                      "Choose at most one action. Reports never run inference, login or token renewal;\n"
                      "an unlock restarts a stopped renewal worker unless you stopped it explicitly."),
         epilog="""Account selectors:
-  ACCOUNT is a saved ID, email or name. Use --plan for ambiguous names.
+  EMAIL is the email that identifies the subscription. When one email has
+  several subscriptions (e.g. Max and a Team seat), you choose with ↑/↓ and Enter.
   --capture also accepts claude, codex or muse to detect the current account.
-  Plans: codex, max_20x, muse_code, team_premium.
 
 Examples:
   %(prog)s --setup
-  %(prog)s --capture claude --plan team_premium
+  %(prog)s --capture claude
+  %(prog)s --reauth you@example.com
   %(prog)s --capture codex
   %(prog)s --sort 7d --reverse
   %(prog)s --switch-next --dry-run
@@ -992,26 +1056,29 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
     actions.add_argument("--background", choices=("start", "status", "stop", "enable-autostart", "disable-autostart"),
                          help="start, inspect or stop independent auth maintenance; no quota polling. "
                               "enable-autostart keeps the vault key in your desktop login keyring so renewal restarts at login")
-    actions.add_argument("--auth-enroll", metavar="ACCOUNT", help="sign in separately for a saved account and start background maintenance")
-    actions.add_argument("--auth-forget", metavar="ACCOUNT", help="forget an independent renewal grant; retain the last access token; no logout")
+    actions.add_argument("--auth-enroll", metavar="EMAIL", help="sign in separately for a saved subscription and start background renewal")
+    actions.add_argument("--reauth", metavar="EMAIL",
+                         help="sign in to a subscription again (e.g. after renewal stopped); the old grant is replaced only once the new sign-in succeeds")
+    actions.add_argument("--auth-forget", metavar="EMAIL", help="forget an independent renewal grant; retain the last access token; no logout")
     actions.add_argument("--refresh", action="store_true", help="sync an already-renewed current CLI token and report usage; no OAuth renewal")
-    actions.add_argument("--import", dest="import_id", metavar="ACCOUNT_ID",
+    actions.add_argument("--import", dest="import_id", metavar="EMAIL",
                          help="import a historical usage snapshot from stdin; never treated as live")
-    actions.add_argument("--capture", metavar="ACCOUNT",
+    actions.add_argument("--capture", metavar="EMAIL",
                          help="save current Claude/Codex access-only credentials, or enter a Muse portal cookie privately")
-    actions.add_argument("--add", metavar="ACCOUNT_ID", help="add a subscription row; requires --plan; optional --name")
-    actions.add_argument("--remove", metavar="ACCOUNT", help="remove a row, its captured token, renewal grant and snapshot")
-    actions.add_argument("--switch", metavar="ACCOUNT", help="switch shared Claude Code subscription auth; preserve Design/MCP and other settings")
+    actions.add_argument("--add", metavar="EMAIL", help="add a subscription for this email; asks which plan")
+    actions.add_argument("--remove", metavar="EMAIL", help="remove a subscription, its captured token, renewal grant and snapshot")
+    actions.add_argument("--switch", metavar="EMAIL", help="switch shared Claude Code subscription auth; preserve Design/MCP and other settings")
     actions.add_argument("--switch-next", action="store_true", help="switch Claude to the best available subscription using the report ranking")
     actions.add_argument("--auto-switch", choices=("enable", "disable", "status", "run", "hook", "worker"),
                          metavar="{enable,disable,status,run}",
                          help="when a Claude Code session hits a usage limit, switch to the next subscription and ask stopped "
                               "sessions to resume: enable/disable the Claude Code hook, show status, or run queued work now")
     actions.add_argument("--undo-switch", action="store_true", help="restore previous shared Claude Code auth from the encrypted undo record")
-    actions.add_argument("--import-muse", metavar="ACCOUNT_ID", help="import a historical Muse usage/read export from stdin")
+    actions.add_argument("--import-muse", metavar="EMAIL", help="import a historical Muse usage/read export from stdin")
     actions.add_argument("--muse-cli-current", action="store_true",
                          help="check the current Muse login with one bootstrap POST; no setup or vault needed")
-    parser.add_argument("--plan", choices=tuple(PLANS), metavar="PLAN", help="subscription type for account actions, disambiguation or --switch-next filtering")
+    parser.add_argument("--plan", choices=tuple(PLANS), metavar="PLAN",
+                        help="limit --switch-next to one plan; in scripts, answers the subscription picker without a terminal")
     parser.add_argument("--provider", choices=("claude", "codex", "muse"),
                         help="provider for --switch-next (default: claude; Codex/Muse switching unavailable)")
     parser.add_argument("--dry-run", action="store_true", help="preview --switch, --switch-next or --undo-switch without changing Claude auth")
@@ -1046,7 +1113,8 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
             raise UsageError("--credential-file is only valid with --capture.")
         if args.muse_team and not args.capture:
             raise UsageError("--muse-team is only valid with --capture.")
-        if args.plan and not (args.add or args.capture or args.remove or args.switch or args.switch_next or args.auth_enroll or args.auth_forget):
+        if args.plan and not (args.add or args.capture or args.remove or args.switch or args.switch_next or args.auth_enroll
+                              or args.auth_forget or args.reauth or args.import_id or args.import_muse):
             raise UsageError("--plan is only valid with an account action or --switch-next.")
         if args.dry_run and not (args.switch or args.undo_switch or args.switch_next):
             raise UsageError("--dry-run is only valid with --switch, --switch-next, or --undo-switch.")
@@ -1106,11 +1174,12 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 except FileExistsError:
                     # Idempotent setup validates existing data without changing it.
                     validate_accounts(store.read("accounts.json"))
-                message = "Seven-account template ready (existing config preserved). Use --capture ACCOUNT_ID for each account while it is current."
+                message = "Seven-account template ready (existing config preserved). Use --capture EMAIL (or --capture claude) for each account while it is current."
                 print(json.dumps({"message": message, "live": False}) if args.json else message)
                 return 0
             accounts = validate_accounts(store.read("accounts.json"))
-            if args.background or args.auth_enroll is not None or args.auth_forget is not None:
+            import account_picker
+            if args.background or args.auth_enroll is not None or args.auth_forget is not None or args.reauth is not None:
                 import auth_renewal
                 if args.background == "status":
                     result = auth_renewal.status(store, accounts)
@@ -1127,10 +1196,13 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 elif args.background == "disable-autostart":
                     import login_keyring
                     result = login_keyring.disable()
-                elif args.auth_enroll is not None:
-                    result = auth_renewal.enroll_and_start(store, args.data_dir, accounts, args.auth_enroll, args.plan)
+                elif args.auth_enroll is not None or args.reauth is not None:
+                    result = account_picker.run(lambda sel, plan: auth_renewal.enroll_and_start(
+                        store, args.data_dir, accounts, sel, plan or args.plan, replace=args.reauth is not None),
+                        args.auth_enroll if args.reauth is None else args.reauth)
                 else:
-                    result = auth_renewal.forget(store, accounts, args.auth_forget, args.plan)
+                    result = account_picker.run(lambda sel, plan: auth_renewal.forget(store, accounts, sel, plan or args.plan),
+                                                args.auth_forget)
                 print(json.dumps(result, ensure_ascii=False) if args.json else auth_renewal.render_status(result))
                 return 1 if result.get("background_error") else 0
             if args.auto_switch:
@@ -1148,7 +1220,15 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 import claude_switch
                 if not args.json:
                     print(claude_switch.NOTICE, file=sys.stderr)
-                result = claude_switch.switch(store, accounts, args.switch, args.plan,
+                if args.switch is not None:
+                    # Resolve the email first so a picker never runs under the switch's locks.
+                    entries = account_identity.for_report(live_usage.load_vault(store))
+                    chosen = account_picker.run(lambda sel, plan: account_picker.match(
+                        accounts, entries, sel, plan or args.plan), args.switch)
+                    selector, plan = chosen["id"], chosen["plan"]
+                else:
+                    selector, plan = None, args.plan
+                result = claude_switch.switch(store, accounts, selector, plan,
                                               dry_run=args.dry_run, undo=args.undo_switch,
                                               automatic=args.switch_next, jobs=args.jobs)
                 result["interface_notice"] = claude_switch.NOTICE
@@ -1156,64 +1236,27 @@ Full guide: https://github.com/turbokast/quotahop/blob/main/USAGE.md
                 print(json.dumps(result, ensure_ascii=False) if args.json else f"{label}: {result['message']}")
                 return 0
             if args.remove is not None:
-                removed = live_usage.remove_account(store, args.remove, plan=args.plan,
-                                                    verbose=args.verbose and not args.json)
-                message = f"Removed {removed['name']} from this tool, including any saved token and snapshot."
+                removed = account_picker.run(lambda sel, plan: live_usage.remove_account(
+                    store, sel, plan=plan or args.plan, verbose=args.verbose and not args.json), args.remove)
+                message = f"Removed {removed['name']} · {PLANS[removed['plan']]} from this tool, including any saved token and snapshot."
                 print(json.dumps({"message": message, "account_id": removed["id"]}) if args.json else message)
                 return 0
             if args.add is not None:
-                if args.plan is None:
-                    raise UsageError("--add requires --plan.")
-                updated = validate_accounts({"accounts": accounts + [
-                    {"id": args.add, "name": args.name or args.add, "plan": args.plan}]})
-                store.write("accounts.json", {"accounts": updated}, replace=True)
-                message = "Account added. Run --auth-enroll with this account ID for independent sign-in and background maintenance, or --capture for an access-only copy."
-                print(json.dumps({"message": message}) if args.json else message)
+                result = account_picker.run(lambda email, plan: add_account(store, accounts, email, plan or args.plan, args.name), args.add)
+                print(json.dumps(result) if args.json else result["message"])
                 return 0
             if args.capture is not None:
                 clean_text(args.capture)
                 reject_secrets(args.capture)
-                matches = [a for a in accounts if a["id"] == args.capture or a["name"].casefold() == args.capture.casefold()]
-                if not matches and not args.plan and args.capture not in ("claude", "codex", "muse"):
-                    # Older vaults can show decoded identity before their plain
-                    # configuration labels have been renamed by a recapture.
-                    saved_entries = account_identity.for_report(live_usage.load_vault(store))
-                    matches = [a for a in accounts if args.capture.casefold() in [
-                        v.casefold() for v in account_identity.saved(saved_entries.get(a["id"], {})).values()]]
-                if args.plan:
-                    matches = [a for a in matches if a["plan"] == args.plan]
-                if len(matches) > 1:
-                    raise UsageError("Account name/email is ambiguous; specify --plan or a unique saved name.")
-                account = matches[0] if matches else {}
-                provider = PROVIDERS[args.plan] if args.plan else PROVIDERS[account["plan"]] if account else {
-                    "claude": "claude", "codex": "codex", "muse": "muse_code"}.get(args.capture)
-                if provider is None:
-                    raise UsageError("For a new email/name, specify --plan max_20x, team_premium, codex, or muse_code.")
-                if args.capture in ("claude", "codex", "muse") and provider != {"claude": "claude", "codex": "codex", "muse": "muse_code"}[args.capture]:
-                    raise UsageError("Plan does not match the selected provider.")
-                if account.get("source") == "cli_current":
-                    raise UsageError("This row reads the current Muse CLI login automatically; capture is unnecessary. Remove source from its configuration to use a portal capture instead.")
-                if provider == "muse_code":
-                    if args.credential_file:
-                        raise UsageError("Muse uses a portal cookie entered privately, not a CLI credential file.")
-                    captured = live_usage.capture(store, args.capture, None, provider, args.muse_team,
-                                                  named=True, plan=args.plan, name=args.name)
-                    message = "Meta portal session and selected team saved in encrypted vault. Only portal GETs were performed; no CLI authentication, refresh, or inference."
-                else:
-                    if args.muse_team:
-                        raise UsageError("--muse-team requires a Muse Code account.")
-                    print(live_usage.CODEX_NOTICE if provider == "codex" else live_usage.NOTICE, file=sys.stderr)
-                    captured = live_usage.capture(store, args.capture,
-                                                (args.credential_file or live_usage.default_source(provider)).expanduser(), provider,
-                                                named=True, plan=args.plan, name=args.name)
-                    message = "Access token captured into encrypted vault. Source credentials unchanged; no login, network request, or refresh performed."
+                captured, message = account_picker.run(lambda sel, plan: capture_account(
+                    store, accounts, sel, plan or args.plan, args), args.capture)
                 result = {"message": message, **captured}
                 print(json.dumps(result) if args.json else f"Captured {captured['account_name']}. {message}")
                 return 0
             if args.import_id is not None or args.import_muse is not None:
-                ident = args.import_id or args.import_muse
-                if ident not in {a["id"] for a in accounts}:
-                    raise UsageError("Unknown account ID; inspect accounts.json.")
+                ident = account_picker.run(lambda sel, plan: account_picker.match(
+                    accounts, {}, sel, plan or args.plan or ("muse_code" if args.import_muse else None)),
+                    args.import_id or args.import_muse)["id"]
                 if args.import_muse and next(a["plan"] for a in accounts if a["id"] == ident) != "muse_code":
                     raise UsageError("--import-muse requires a Muse Code account.")
                 raw = decode(sys.stdin.buffer.read(LIMIT + 1))

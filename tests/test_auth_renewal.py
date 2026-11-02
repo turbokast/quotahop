@@ -206,7 +206,7 @@ class RenewalTests(unittest.TestCase):
         title, message = self.send.call_args[0]
         self.assertIn('renewal stopped', title.lower())
         self.assertIn(EMAIL, message)
-        self.assertIn('--auth-enroll', message)
+        self.assertIn('--reauth', message)
 
     def test_crash_marker_never_replays_token(self):
         item = record(self.auth, self.entry, True)
@@ -352,6 +352,59 @@ class RenewalTests(unittest.TestCase):
         stop.assert_not_called()
         start.assert_not_called()
         perform.assert_not_called()
+
+    def test_enroll_refuses_existing_grant_and_points_to_reauth(self):
+        self.save()
+        with patch.object(native, 'perform') as call, self.assertRaises(live.LiveError) as caught:
+            renewal.enroll(self.store, self.accounts, EMAIL)
+        call.assert_not_called()
+        self.assertIn('--reauth', str(caught.exception))
+
+    def test_reauth_replaces_suspended_grant_only_after_new_sign_in(self):
+        item = record(self.auth, self.entry)
+        item['state'] = 'suspended'
+        self.save({'codex-1': item})
+        fresh, entry = fake_pair('reauth')
+        with patch.object(native, 'perform', return_value=(fresh, entry)) as call:
+            result = renewal.enroll(self.store, self.accounts, EMAIL, replace=True)
+        call.assert_called_once_with()
+        self.assertEqual(result['account_id'], 'codex-1')
+        saved = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual((saved['state'], saved['auth']), ('ready', fresh))
+        self.assertEqual(live.load_vault(self.store)['codex-1'], entry)
+
+    def test_failed_reauth_keeps_previous_grant(self):
+        self.save({'codex-1': record(self.auth, self.entry)})
+        before = renewal.records(self.store, KEY)
+        for error in (live.LiveError('auth_rejected', 'no'), KeyboardInterrupt()):
+            with patch.object(native, 'perform', side_effect=error), self.assertRaises(type(error)):
+                renewal.enroll(self.store, self.accounts, EMAIL, replace=True)
+            self.assertEqual(renewal.records(self.store, KEY), before)
+            self.assertEqual(live.load_vault(self.store)['codex-1'], self.entry)
+
+    def test_reauth_refuses_login_claude_code_holds(self):
+        item = record(self.auth, self.entry)
+        item['state'] = 'cli_owned'
+        with patch.object(renewal, 'records', return_value={'codex-1': item}), \
+                patch.object(native, 'perform') as call, self.assertRaises(live.LiveError) as caught:
+            renewal.enroll(self.store, self.accounts, EMAIL, replace=True)
+        call.assert_not_called()
+        self.assertEqual(caught.exception.code, 'cli_owned')
+
+    def test_reauth_cli_restarts_worker_and_reports(self):
+        item = record(self.auth, self.entry)
+        item['state'] = 'suspended'
+        self.save({'codex-1': item})
+        fresh, entry = fake_pair('reauth')
+        out = io.StringIO()
+        with patch.object(native, 'perform', return_value=(fresh, entry)), \
+                patch.object(renewal, 'start') as start, patch.object(renewal, 'running', return_value=False), \
+                patch('sys.stdout', out):
+            code = app.main(['--data-dir', str(self.path), '--json', '--reauth', EMAIL])
+        self.assertEqual(code, 0)
+        start.assert_called_once()
+        self.assertEqual(json.loads(out.getvalue())['account_id'], 'codex-1')
+        self.assertEqual(renewal.records(self.store, KEY)['codex-1']['state'], 'ready')
 
     def test_plan_is_inferred_from_unique_saved_account(self):
         entries = {'codex-1': self.entry}
