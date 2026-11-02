@@ -55,7 +55,10 @@ class RenewalTests(unittest.TestCase):
         patcher = patch('live_usage.vault_cache.get', return_value=KEY)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for target, kwargs in (('auth_renewal.check_network', {}), ('desktop_notify.send', {'return_value': True})):
+        absent = self.path.parent / 'no-claude-login'
+        # Never read the real Claude Code login (the cycle's CLI-ownership sync).
+        for target, kwargs in (('auth_renewal.check_network', {}), ('desktop_notify.send', {'return_value': True}),
+                               ('claude_switch.paths', {'return_value': (absent / '.credentials.json', absent / '.claude.json')})):
             patcher = patch(target, **kwargs)
             setattr(self, target.split('.')[-1], patcher.start())
             self.addCleanup(patcher.stop)

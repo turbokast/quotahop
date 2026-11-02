@@ -32,8 +32,14 @@ _hermetic = []
 
 def setUpModule():
     # Renewal cycles must never probe real hosts or pop desktop notifications.
+    # Nor read the real Claude Code login: the CLI-ownership sync inside a
+    # cycle would otherwise send that token to the profile endpoint.
     from unittest.mock import patch as _patch
-    for target, kwargs in (('auth_renewal.check_network', {}), ('desktop_notify.send', {'return_value': True})):
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+    absent = _Path(_tempfile.gettempdir()) / ('quotahop-test-absent-' + __import__('uuid').uuid4().hex)
+    for target, kwargs in (('auth_renewal.check_network', {}), ('desktop_notify.send', {'return_value': True}),
+                           ('claude_switch.paths', {'return_value': (absent / '.credentials.json', absent / '.claude.json')})):
         patcher = _patch(target, **kwargs)
         patcher.start()
         _hermetic.append(patcher)
