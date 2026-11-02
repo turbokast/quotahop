@@ -258,7 +258,10 @@ refused until verified. QuotaHop finds the pinned Claude build on your PATH, amo
 sibling versions, or in a retained copy it keeps under
 `${XDG_DATA_HOME:-~/.local/share}/quotahop/` so that Claude Code pruning old
 versions cannot stop renewal. If none verifies, renewal pauses as `blocked`
-(grants intact, retried every 10 minutes) instead of suspending. Read-only
+(grants intact, retried every 10 minutes) instead of suspending. A renewal that
+falls due while the network is unreachable is also held as `blocked` and retried
+every two minutes, since nothing was sent; a grant that does become `suspended`
+raises a desktop notification. Read-only
 capture does not need these binaries. See the
 [renewal guide](USAGE.md#optional-background-authentication-renewal).
 

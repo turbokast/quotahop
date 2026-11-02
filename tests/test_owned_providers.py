@@ -26,6 +26,23 @@ OTHER_ORG = '33333333-3333-3333-3333-333333333333'
 EMAIL = 'person@example.test'
 
 
+
+_hermetic = []
+
+
+def setUpModule():
+    # Renewal cycles must never probe real hosts or pop desktop notifications.
+    from unittest.mock import patch as _patch
+    for target, kwargs in (('auth_renewal.check_network', {}), ('desktop_notify.send', {'return_value': True})):
+        patcher = _patch(target, **kwargs)
+        patcher.start()
+        _hermetic.append(patcher)
+
+
+def tearDownModule():
+    while _hermetic:
+        _hermetic.pop().stop()
+
 def claude_pair(serial='old', org=ORG, plan='max_20x'):
     expiry = time.time() + 7200
     auth = {'claudeAiOauth': {'accessToken': 'FAKE-CLAUDE-ACCESS-' + serial,

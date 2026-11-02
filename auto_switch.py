@@ -401,15 +401,8 @@ def nudge(sessions, text):
 
 
 def desktop_notify(message):
-    binary = shutil.which("notify-send")
-    if not binary:
-        return
-    try:
-        subprocess.run([binary, "--app-name=QuotaHop", "QuotaHop auto-switch", message],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=5, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    import desktop_notify as notifier
+    notifier.send("QuotaHop auto-switch", message)
 
 
 # ----- Claude Code hook installation -----------------------------------------

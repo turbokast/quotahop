@@ -21,6 +21,23 @@ IDS = {"a": ("00000000-0000-4000-8000-00000000000a", "a@example.test"),
 ORG = "00000000-0000-4000-8000-0000000000ff"
 
 
+
+_hermetic = []
+
+
+def setUpModule():
+    # Renewal cycles must never probe real hosts or pop desktop notifications.
+    from unittest.mock import patch as _patch
+    for target, kwargs in (('auth_renewal.check_network', {}), ('desktop_notify.send', {'return_value': True})):
+        patcher = _patch(target, **kwargs)
+        patcher.start()
+        _hermetic.append(patcher)
+
+
+def tearDownModule():
+    while _hermetic:
+        _hermetic.pop().stop()
+
 def binding(name):
     return {"account_uuid": IDS[name][0], "organization_uuid": ORG}
 

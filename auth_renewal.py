@@ -16,6 +16,7 @@ from pathlib import Path
 import resource
 import select
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -35,12 +36,42 @@ STOP = 'renewal-stop.json'
 LOCK = 'renewal-lock.json'
 BLOCKED_RETRY = 600
 BLOCKED = {'unsupported_cli': 'Claude Code updated to a build QuotaHop has not verified, and no verified build remains installed; renewal paused, grant intact.',
-           'dependency_missing': 'Renewal tool missing (CLI or bubblewrap); renewal paused, grant intact.'}
+           'dependency_missing': 'Renewal tool missing (CLI or bubblewrap); renewal paused, grant intact.',
+           'network_unavailable': 'Network was unreachable at renewal time, so nothing was sent; retrying every two minutes, grant intact.'}
+NETWORK_RETRY = 120
+# Hosts the native CLI contacts during a renewal (token endpoint, then profile).
+RENEWAL_HOSTS = {'claude': (('platform.claude.com', 443), ('api.anthropic.com', 443)),
+                 'codex': (('auth.openai.com', 443),)}
+NETWORK_TIMEOUT = 5
 RESERVED = {'renewal', 'renewal-status', 'renewal-stop', 'renewal-lock'}
 BACKENDS = {'codex': owned_codex, 'claude': owned_claude, 'muse_code': owned_muse}
 ORIGINS = {'codex': 'isolated-codex-device-v1', 'claude': owned_claude.ORIGIN, 'muse_code': owned_muse.ORIGIN}
 LIMITATIONS = {provider: 'Requires a fresh independent sign-in with --auth-enroll ACCOUNT; captured CLI grants are never renewed.' for provider in BACKENDS}
 LIMITATIONS['muse_code'] = 'Independent sign-in and expiry tracking supported; Muse device-token renewal is unavailable. Re-enroll when expired.'
+
+
+def check_network(provider):
+    """Refuse a renewal before the native CLI starts if its hosts are unreachable.
+
+    Only DNS resolution and a TCP connection are attempted; nothing is sent.
+    A renewal whose request never left the machine is safe to retry, whereas
+    a failure after sending must suspend (a lost reply can hide a rotation).
+    This narrows that window to outages that begin mid-renewal.
+    """
+    for host, port in RENEWAL_HOSTS.get(provider, ()):
+        try:
+            socket.create_connection((host, port), timeout=NETWORK_TIMEOUT).close()
+        except OSError:
+            raise isolated_auth.PreflightError('network_unavailable', 'Renewal endpoint unreachable; nothing was sent.') from None
+
+
+def notify_suspended(names):
+    if not names:
+        return
+    import desktop_notify
+    desktop_notify.send('QuotaHop renewal stopped',
+                        f"Renewal stopped for {', '.join(sorted(names))}: the outcome of a renewal is uncertain, so QuotaHop "
+                        "will not retry it. Re-enroll with: quotahop --auth-enroll ACCOUNT --plan PLAN")
 
 
 def provider_for(account):
@@ -437,6 +468,7 @@ def cycle(store, key, now=None):
         valid = {a['id']: a for a in accounts}
         saved = {ident: item for ident, item in saved.items() if ident in valid
                  and item['origin'] == ORIGINS[provider_for(valid[ident])]}
+        previous = {ident: item['state'] for ident, item in saved.items()}
         for ident, item in saved.items():
             try:
                 store.read(STOP)
@@ -455,6 +487,12 @@ def cycle(store, key, now=None):
                 item['state'] = 'reauth_required'
                 continue  # No native key re-mint or device-token refresh attempt.
             if item['next_at'] <= now:
+                try:
+                    # Before in_flight: a crash here must not suspend the grant.
+                    check_network(provider_for(valid[ident]))
+                except isolated_auth.PreflightError:
+                    item.update(blocked='network_unavailable', next_at=time.time() + NETWORK_RETRY)
+                    continue
                 item['state'] = 'in_flight'
                 store.write(REGISTRY, seal(saved, key), replace=True)
                 store.write(STATUS, public_status(accounts, saved, active=True), replace=True)
@@ -484,6 +522,9 @@ def cycle(store, key, now=None):
                 item['published'] = digest(item['entry'])
         if json.dumps(saved, sort_keys=True) != original_saved:
             store.write(REGISTRY, seal(saved, key), replace=True)
+        notify_suspended({valid[ident]['name'] + ' (' + valid[ident]['plan'] + ')' for ident, item in saved.items()
+                          if item['state'] in ('suspended', 'reauth_required')
+                          and previous.get(ident) not in ('suspended', 'reauth_required')})
         result = public_status(accounts, saved, active=True)
         store.write(STATUS, result, replace=True)
         return result

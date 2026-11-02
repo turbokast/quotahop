@@ -729,7 +729,7 @@ tokens) shows the last observation; a stopped worker does not renew.
 | State | Meaning |
 |---|---|
 | `ready` | QuotaHop holds the grant and renews it five minutes before expiry (Muse: expiry tracking). |
-| `blocked` | A `ready` grant is paused because no verified Claude build or required tool is available. The refresh token was never sent; retried every 10 minutes. |
+| `blocked` | A `ready` grant is paused because no verified Claude build or required tool is available (retried every 10 minutes), or because the renewal hosts were unreachable (retried every 2 minutes). The refresh token was never sent. |
 | `cli_owned` (mode `cli_renewal`) | Claude Code holds and renews it while active; QuotaHop mirrors it and takes it back when the CLI moves on. |
 | `legacy_hold` (mode `renewal_hold`) | An older grant with no ownership record, held until the CLI is confirmed to hold a different login. |
 | `in_flight` | A renewal request was sent and not yet recorded. An interrupted one becomes `suspended`. |
@@ -757,6 +757,18 @@ Refreshes are serialised. An encrypted in-flight marker is saved before calling
 the provider, and rotated credentials are persisted before their access tokens
 are published. Any failed or interrupted refresh **suspends** that account;
 an uncertain rotation is never replayed.
+
+Before marking a renewal in flight, the worker checks that the provider's
+renewal hosts accept a TCP connection (Claude: `platform.claude.com` and
+`api.anthropic.com`; Codex: `auth.openai.com`). This sends nothing. If a host
+cannot be resolved or reached, the refresh token never leaves the machine, so
+the grant stays `blocked` and is retried every two minutes instead of being
+suspended. This covers outages that are already under way when a renewal falls
+due; a connection lost in the seconds after the check can still suspend.
+
+When a grant becomes `suspended` (or a Muse sign-in `reauth_required`), the
+worker sends one desktop notification (via `notify-send`, when available) naming
+the account, so a stopped renewal is not discovered only after it expires.
 
 ### Native builds and sandbox
 

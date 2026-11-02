@@ -55,6 +55,10 @@ class RenewalTests(unittest.TestCase):
         patcher = patch('live_usage.vault_cache.get', return_value=KEY)
         patcher.start()
         self.addCleanup(patcher.stop)
+        for target, kwargs in (('auth_renewal.check_network', {}), ('desktop_notify.send', {'return_value': True})):
+            patcher = patch(target, **kwargs)
+            setattr(self, target.split('.')[-1], patcher.start())
+            self.addCleanup(patcher.stop)
 
     def save(self, value=None):
         self.store.write(renewal.REGISTRY, renewal.seal(value or {'codex-1': record(self.auth, self.entry, True)}, KEY), replace=True)
@@ -159,6 +163,47 @@ class RenewalTests(unittest.TestCase):
         item = renewal.records(self.store, KEY)['codex-1']
         self.assertEqual(item['state'], 'ready')
         self.assertNotIn('blocked', item)
+
+    def test_unreachable_network_pauses_before_marking_in_flight(self):
+        import isolated_auth
+        self.save()
+        self.check_network.side_effect = isolated_auth.PreflightError('network_unavailable', 'offline')
+        writes = []
+        real = self.store.write
+        with patch.object(native, 'perform') as call, \
+                patch.object(self.store, 'write', side_effect=lambda n, v, **k: (writes.append(n), real(n, v, **k))):
+            renewal.cycle(self.store, KEY)
+            renewal.cycle(self.store, KEY)  # two-minute backoff: no immediate retry
+        call.assert_not_called()
+        self.assertEqual(self.check_network.call_count, 1)
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual((item['state'], item['blocked']), ('ready', 'network_unavailable'))
+        self.assertLessEqual(item['next_at'], time.time() + renewal.NETWORK_RETRY)
+        self.assertGreater(item['next_at'], time.time() + renewal.NETWORK_RETRY - 60)
+        self.assertEqual(renewal.status(self.store, self.accounts)['accounts'][-2]['state'], 'blocked')
+        self.send.assert_not_called()
+        # Back online: renews normally and clears the block.
+        item['next_at'] = time.time() - 1
+        self.save({'codex-1': item})
+        self.check_network.side_effect = None
+        fresh, entry = fake_pair('rotated')
+        with patch.object(native, 'perform', return_value=(fresh, entry)) as call:
+            renewal.cycle(self.store, KEY)
+        call.assert_called_once_with(self.auth)
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual(item['state'], 'ready')
+        self.assertNotIn('blocked', item)
+
+    def test_suspension_notifies_once(self):
+        self.save()
+        with patch.object(native, 'perform', side_effect=TimeoutError()):
+            renewal.cycle(self.store, KEY)
+            renewal.cycle(self.store, KEY)
+        self.send.assert_called_once()
+        title, message = self.send.call_args[0]
+        self.assertIn('renewal stopped', title.lower())
+        self.assertIn(EMAIL, message)
+        self.assertIn('--auth-enroll', message)
 
     def test_crash_marker_never_replays_token(self):
         item = record(self.auth, self.entry, True)
@@ -490,6 +535,30 @@ class NativeBoundaryTests(unittest.TestCase):
         proc.terminate.assert_called_once()
         proc.wait.assert_called()
         self.assertFalse(seen[0].exists())
+
+
+
+class NetworkCheckTests(unittest.TestCase):
+    def test_connects_to_each_renewal_host_and_sends_nothing(self):
+        conn = MagicMock()
+        with patch('auth_renewal.socket.create_connection', return_value=conn) as connect:
+            renewal.check_network('claude')
+        self.assertEqual([c.args[0] for c in connect.call_args_list], list(renewal.RENEWAL_HOSTS['claude']))
+        conn.send.assert_not_called()
+        conn.sendall.assert_not_called()
+        self.assertEqual(conn.close.call_count, 2)
+
+    def test_unreachable_host_is_a_preflight_refusal(self):
+        import isolated_auth
+        for error in (OSError('down'), TimeoutError(), __import__('socket').gaierror(-3, 'dns')):
+            with patch('auth_renewal.socket.create_connection', side_effect=error):
+                with self.assertRaises(isolated_auth.PreflightError) as caught:
+                    renewal.check_network('codex')
+            self.assertEqual(caught.exception.code, 'network_unavailable')
+
+    def test_providers_without_renewal_need_no_network(self):
+        with patch('auth_renewal.socket.create_connection', side_effect=AssertionError('network')):
+            renewal.check_network('muse_code')
 
 
 if __name__ == '__main__':
