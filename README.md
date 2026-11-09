@@ -232,8 +232,10 @@ old one. If you `/login` in Claude Code yourself, the worker notices, takes back
 the previous account and adopts the new login, **including accounts you only
 captured**, as long as it can attribute the login by exact token or a verified
 account/organisation match. So you can sign in once in Claude Code and QuotaHop
-keeps it renewable; switching never costs a login. Uncertain refresh outcomes
-suspend the account rather than replay a potentially consumed token.
+keeps it renewable; switching never costs a login. A refresh that fails part way
+is retried automatically with the same grant (2 min, 5 min, 15 min, 30 min, then
+hourly, about 4.6 hours in all), and a refreshed login the sandboxed CLI saved
+before failing is kept. Only if every retry fails does the account stop.
 
 **Lifecycle.** A reboot stops the worker. Any interactive unlock (a report, or `u`
 in the panel) restarts it when grants need maintenance, **except** after an
@@ -243,7 +245,7 @@ with `--background enable-autostart` (stores the vault key in your login keyring
 and adds `~/.config/autostart/quotahop-renewal.desktop`; undo with
 `--background disable-autostart`). Read the [trade-offs](USAGE.md#renewal-after-reboot)
 first. `--background status` shows per-account states (`ready`, `blocked`,
-`cli_owned`, `legacy_hold`, `suspended`, `reauth_required`, `needs_enrollment`;
+`retrying`, `cli_owned`, `legacy_hold`, `suspended`, `reauth_required`, `needs_enrollment`;
 see the [state table](USAGE.md#status)).
 
 **When to sign in again.** Only for `suspended` or `reauth_required` grants, or an
@@ -263,7 +265,7 @@ versions cannot stop renewal. If none verifies, renewal pauses as `blocked`
 (grants intact, retried every 10 minutes) instead of suspending. A renewal that
 falls due while the network is unreachable is also held as `blocked` and retried
 every two minutes, since nothing was sent; a grant that does become `suspended`
-raises a desktop notification. Read-only
+(retries exhausted, or a definitive mismatch) raises a desktop notification. Read-only
 capture does not need these binaries. See the
 [renewal guide](USAGE.md#optional-background-authentication-renewal).
 

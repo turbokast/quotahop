@@ -219,7 +219,8 @@ Warnings at the foot of the summary:
 |---|---|
 | `! Renewal off: quotahop --background start` | The worker is not running. |
 | `! Renewal paused (n): unverified Claude build` | n grants are `blocked`; see [builds](#native-builds-and-sandbox). |
-| `! Renewal stopped (n): re-enroll` | n grants are `suspended`; see [recovery](#recovery-and-re-enrollment). |
+| `~ Renewal retrying (n): automatic` | n grants had a renewal fail part way and are being retried automatically; nothing to do. |
+| `! Renewal stopped (n): quotahop --reauth EMAIL` | n grants are `suspended`; see [recovery](#recovery-and-re-enrollment). |
 | `! CLI sync: …` | Following Claude Code's renewed token failed for a reason that will not resolve itself. |
 
 ## Choosing a subscription
@@ -742,8 +743,9 @@ tokens) shows the last observation; a stopped worker does not renew.
 | `blocked` | A `ready` grant is paused because no verified Claude build or required tool is available (retried every 10 minutes), or because the renewal hosts were unreachable (retried every 2 minutes). The refresh token was never sent. |
 | `cli_owned` (mode `cli_renewal`) | Claude Code holds and renews it while active; QuotaHop mirrors it and takes it back when the CLI moves on. |
 | `legacy_hold` (mode `renewal_hold`) | An older grant with no ownership record, held until the CLI is confirmed to hold a different login. |
-| `in_flight` | A renewal request was sent and not yet recorded. An interrupted one becomes `suspended`. |
-| `suspended` | Renewal outcome uncertain. Never replayed automatically. |
+| `retrying` | A renewal failed after it may have reached the provider. The same grant is retried automatically (2, 5, 15, 30 minutes, then hourly; 8 attempts, about 4.6 hours). Status shows the attempt and the last error code. |
+| `in_flight` | A renewal request was sent and not yet recorded. An interrupted one becomes `retrying`. |
+| `suspended` | Renewal stopped and cannot recover on its own: the provider refused the refresh token, so the login was revoked or used elsewhere (`refresh refused`; Claude Code clears both tokens when this happens, so QuotaHop stops at once instead of retrying), every retry failed (`retries exhausted`), the provider returned a different account (`account mismatch`), or the saved login was replaced outside renewal (`vault changed`). |
 | `reauth_required` | A Muse device sign-in expired. |
 | `needs_enrollment` | No grant is saved for this row. |
 
@@ -770,8 +772,13 @@ grant. Capture refuses to overwrite an enrolled account until it is forgotten.
 
 Refreshes are serialised. An encrypted in-flight marker is saved before calling
 the provider, and rotated credentials are persisted before their access tokens
-are published. Any failed or interrupted refresh **suspends** that account;
-an uncertain rotation is never replayed.
+are published. A failed or interrupted refresh is **retried** with the same
+grant on the schedule above. Replaying is safe here: if the provider did rotate
+the grant and the reply was lost, the newer grant is already lost, so the old
+one either still works (renewal heals) or is refused (no worse). For Claude, a
+rotated grant the sandboxed CLI saved before a later step failed or timed out is
+kept rather than discarded with the sandbox. Grants stopped by older versions
+after one uncertain outcome get the same retries after upgrading.
 
 Before marking a renewal in flight, the worker checks that the provider's
 renewal hosts accept a TCP connection (Claude: `platform.claude.com` and
@@ -779,10 +786,10 @@ renewal hosts accept a TCP connection (Claude: `platform.claude.com` and
 cannot be resolved or reached, the refresh token never leaves the machine, so
 the grant stays `blocked` and is retried every two minutes instead of being
 suspended. This covers outages that are already under way when a renewal falls
-due; a connection lost in the seconds after the check can still suspend.
+due; a connection lost in the seconds after the check is covered by the retries.
 
 When a grant becomes `suspended` (or a Muse sign-in `reauth_required`), the
-worker sends one desktop notification (via `notify-send`, when available) naming
+worker sends one desktop notification (not for each retry) (via `notify-send`, when available) naming
 the account, so a stopped renewal is not discovered only after it expires.
 
 ### Native builds and sandbox

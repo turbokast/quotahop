@@ -346,8 +346,10 @@ def summary_lines(data, width, now, selected_provider=None):
         result.append(("! Renewal off: quotahop --background start", "high"))
     if renewal["blocked"]:
         result.append((f"! Renewal paused ({renewal['blocked']}): unverified Claude build", "warn"))
+    if renewal["retrying"]:
+        result.append((f"~ Renewal retrying ({renewal['retrying']}): automatic", "warn"))
     if renewal["suspended"] or renewal["in_flight"]:
-        result.append((f"! Renewal stopped ({renewal['suspended'] + renewal['in_flight']}): re-enroll", "warn"))
+        result.append((f"! Renewal stopped ({renewal['suspended'] + renewal['in_flight']}): quotahop --reauth EMAIL", "warn"))
     if data.get("cli_sync_problem"):
         result.append(("! CLI sync: " + data["cli_sync_problem"], "warn"))
     return [(clip(text, max(0, width)), style) for text, style in result]

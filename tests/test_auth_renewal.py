@@ -133,16 +133,72 @@ class RenewalTests(unittest.TestCase):
         self.assertEqual(self.store.read('vault.json'), before)
         self.assertEqual(self.store.read(renewal.REGISTRY), registry)
 
-    def test_uncertain_outcomes_suspend_without_replaying_refresh_token(self):
-        for error in (TimeoutError('FAKE-REFRESH'), live.LiveError('invalid_grant', 'FAKE-REFRESH')):
+    def due(self):
+        item = renewal.records(self.store, KEY)['codex-1']
+        item['next_at'] = time.time() - 1
+        self.save({'codex-1': item})
+
+    def test_uncertain_outcome_retries_same_grant_with_backoff(self):
+        for error in (TimeoutError('FAKE-REFRESH'), live.LiveError('auth_timeout', 'FAKE-REFRESH')):
             self.save()
             with patch.object(native, 'perform', side_effect=error) as call:
                 renewal.cycle(self.store, KEY)
-                renewal.cycle(self.store, KEY)
-            call.assert_called_once()
-            self.assertEqual(renewal.records(self.store, KEY)['codex-1']['state'], 'suspended')
-            self.assertNotIn('FAKE-REFRESH', json.dumps(renewal.status(self.store, self.accounts)))
+                renewal.cycle(self.store, KEY)  # backoff: no immediate retry
+            call.assert_called_once_with(self.auth)
+            item = renewal.records(self.store, KEY)['codex-1']
+            self.assertEqual(item['state'], 'ready')
+            self.assertEqual(item['retry']['count'], 1)
+            self.assertGreater(item['next_at'], time.time() + renewal.RETRY_DELAYS[0] - 60)
+            status = renewal.status(self.store, self.accounts)
+            row = next(r for r in status['accounts'] if r['id'] == 'codex-1')
+            self.assertEqual((row['state'], row['attempt']), ('retrying', 1))
+            self.assertNotIn('FAKE-REFRESH', json.dumps(status))
             self.assertEqual(live.load_vault(self.store)['codex-1'], self.entry)
+            self.send.assert_not_called()
+
+    def test_retry_that_succeeds_heals_and_clears_retry_state(self):
+        self.save()
+        with patch.object(native, 'perform', side_effect=TimeoutError()):
+            renewal.cycle(self.store, KEY)
+        self.due()
+        fresh, entry = fake_pair('rotated')
+        with patch.object(native, 'perform', return_value=(fresh, entry)) as call:
+            renewal.cycle(self.store, KEY)
+        call.assert_called_once_with(self.auth)
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual(item['state'], 'ready')
+        self.assertNotIn('retry', item)
+        self.assertEqual(live.load_vault(self.store)['codex-1'], entry)
+
+    def test_retries_exhausted_stop_and_notify_once(self):
+        self.save()
+        with patch.object(native, 'perform', side_effect=live.LiveError('auth_rejected', 'x')) as call:
+            for _ in range(len(renewal.RETRY_DELAYS) + 1):
+                renewal.cycle(self.store, KEY)
+                if renewal.records(self.store, KEY)['codex-1']['state'] == 'ready':
+                    self.due()
+            renewal.cycle(self.store, KEY)
+        self.assertEqual(call.call_count, len(renewal.RETRY_DELAYS) + 1)
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual((item['state'], item['reason'], item['retry']['code']), ('suspended', 'retries_exhausted', 'auth_rejected'))
+        self.send.assert_called_once()
+        title, message = self.send.call_args[0]
+        self.assertIn('renewal stopped', title.lower())
+        self.assertIn(EMAIL, message)
+        self.assertIn('--reauth', message)
+        self.assertIn('retries exhausted', renewal.render_status(renewal.status(self.store, self.accounts)))
+
+    def test_previously_stopped_grant_gets_retried_once_upgraded(self):
+        item = record(self.auth, self.entry)
+        item['state'] = 'suspended'
+        self.save({'codex-1': item})
+        fresh, entry = fake_pair('rotated')
+        with patch.object(native, 'perform', return_value=(fresh, entry)) as call:
+            renewal.cycle(self.store, KEY)
+        call.assert_called_once_with(self.auth)
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual(item['state'], 'ready')
+        self.assertNotIn('retry', item)
 
     def test_preflight_refusal_pauses_without_suspending_then_retries(self):
         import isolated_auth
@@ -197,25 +253,15 @@ class RenewalTests(unittest.TestCase):
         self.assertEqual(item['state'], 'ready')
         self.assertNotIn('blocked', item)
 
-    def test_suspension_notifies_once(self):
-        self.save()
-        with patch.object(native, 'perform', side_effect=TimeoutError()):
-            renewal.cycle(self.store, KEY)
-            renewal.cycle(self.store, KEY)
-        self.send.assert_called_once()
-        title, message = self.send.call_args[0]
-        self.assertIn('renewal stopped', title.lower())
-        self.assertIn(EMAIL, message)
-        self.assertIn('--reauth', message)
-
-    def test_crash_marker_never_replays_token(self):
+    def test_interrupted_renewal_is_retried_later_not_immediately(self):
         item = record(self.auth, self.entry, True)
         item['state'] = 'in_flight'
         self.save({'codex-1': item})
         with patch.object(native, 'perform') as call:
             renewal.cycle(self.store, KEY)
         call.assert_not_called()
-        self.assertEqual(renewal.records(self.store, KEY)['codex-1']['state'], 'suspended')
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual((item['state'], item['retry']['code']), ('ready', 'interrupted'))
 
     def test_crash_between_grant_commit_and_publication_recovers_without_refresh(self):
         fresh, entry = fake_pair('rotated')
@@ -235,7 +281,8 @@ class RenewalTests(unittest.TestCase):
             renewal.cycle(self.store, KEY)
         call.assert_not_called()
         self.assertEqual(live.load_vault(self.store)['codex-1'], different)
-        self.assertEqual(renewal.records(self.store, KEY)['codex-1']['state'], 'suspended')
+        item = renewal.records(self.store, KEY)['codex-1']
+        self.assertEqual((item['state'], item['reason']), ('suspended', 'vault_changed'))
 
     def test_removed_account_is_never_resurrected(self):
         self.save()

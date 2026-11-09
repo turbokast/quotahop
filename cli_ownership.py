@@ -135,7 +135,7 @@ def reconcile(store, key, accounts, entries, saved, oauth):
             entry = entry_for(item['auth'], entries.get(ident) or item['entry'])
             item.update(entry=entry, state='ready', ownership='private', published=auth_renewal.digest(entry),
                         next_at=entry['expires_at'] - 300, updated_at=now)
-            item.pop('blocked', None)
+            auth_renewal.healthy(item)
             entries[ident] = entry
     if current is not None and cli_grant is not None:
         item = saved.get(current)

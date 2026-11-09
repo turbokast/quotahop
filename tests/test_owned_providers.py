@@ -221,6 +221,17 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(live.load_vault(self.store)['max-1'], entry)
         self.assertEqual(renewal.records(self.store, KEY)['max-1']['state'], 'suspended')
 
+    def test_refused_refresh_stops_at_once_and_notifies(self):
+        auth, entry = claude_pair()
+        self.save({'max-1': entry}, {'max-1': record('claude', auth, entry, True)})
+        with patch.object(claude, 'perform', side_effect=live.LiveError('refresh_refused', 'x')) as call, \
+             patch('desktop_notify.send', return_value=True) as send:
+            renewal.cycle(self.store, KEY); renewal.cycle(self.store, KEY)
+        call.assert_called_once()
+        item = renewal.records(self.store, KEY)['max-1']
+        self.assertEqual((item['state'], item['reason']), ('suspended', 'refresh_refused'))
+        send.assert_called_once()
+
     def test_sync_does_not_replace_independent_grant_from_shared_context(self):
         auth, entry = claude_pair()
         self.save({'max-1': entry}, {'max-1': record('claude', auth, entry)})
@@ -297,6 +308,48 @@ class NativeTests(unittest.TestCase):
         self.assertAlmostEqual(entry.pop('expires_at'), expected['expires_at'], places=3)  # ms round trip
         self.assertEqual(entry, {k: v for k, v in expected.items() if k not in ('claude_identity', 'identity', 'expires_at')})
         proc.communicate.assert_called_once()
+
+    def test_claude_rotation_saved_before_a_timeout_is_kept(self):
+        import subprocess
+        old, _ = claude_pair(); fresh, expected = claude_pair('rotated')
+        for saves in (True, False):
+            proc = MagicMock()
+            @contextmanager
+            def fake_process(cmd):
+                root = Path(cmd[0])
+                def communicate(payload, timeout):
+                    if saves:  # Refreshed and saved, then hung before replying.
+                        (root / 'claude/.credentials.json').write_text(json.dumps(fresh))
+                    raise subprocess.TimeoutExpired('FAKE-SECRET', 25)
+                proc.communicate.side_effect = communicate
+                yield proc
+            with patch.object(isolated_auth, 'command', side_effect=lambda provider, root, args: [str(root), *args]), \
+                 patch.object(isolated_auth, 'process', fake_process):
+                if saves:
+                    auth, entry = claude.perform(old, account={'plan': 'max_20x'})
+                    self.assertEqual(auth, fresh)
+                    self.assertEqual(entry['access_token'], expected['access_token'])
+                else:
+                    with self.assertRaises(live.LiveError) as caught:
+                        claude.perform(old, account={'plan': 'max_20x'})
+                    self.assertEqual(caught.exception.code, 'auth_timeout')
+
+    def test_claude_cleared_tokens_mean_refresh_refused(self):
+        old, _ = claude_pair()
+        cleared = {'claudeAiOauth': {**old['claudeAiOauth'], 'accessToken': '', 'refreshToken': ''}}
+        proc = MagicMock(); proc.returncode = 0
+        @contextmanager
+        def fake_process(cmd):
+            root = Path(cmd[0])
+            def communicate(payload, timeout):
+                (root / 'claude/.credentials.json').write_text(json.dumps(cleared))
+                return json.dumps({'type': 'control_response', 'response': {'request_id': 'cc-usage-auth', 'subtype': 'success'}}).encode(), None
+            proc.communicate.side_effect = communicate
+            yield proc
+        with patch.object(isolated_auth, 'command', side_effect=lambda provider, root, args: [str(root), *args]), \
+             patch.object(isolated_auth, 'process', fake_process), self.assertRaises(live.LiveError) as caught:
+            claude.perform(old, account={'plan': 'max_20x'})
+        self.assertEqual(caught.exception.code, 'refresh_refused')
 
     def test_native_login_format_includes_client_and_refresh_expiry(self):
         for expiry in (None, (time.time()+86400)*1000):

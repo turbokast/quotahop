@@ -50,6 +50,24 @@ def matches(auth, entry):
     return entry.get('provider', 'claude') == 'claude' and entry.get('access_token') == auth['claudeAiOauth']['accessToken']
 
 
+def rotated(source, auth):
+    """True when the sandbox holds a valid grant newer than the one supplied."""
+    try:
+        current = validate_auth(private_read(source))['claudeAiOauth']
+    except Exception:
+        return False
+    return current['accessToken'] != auth['claudeAiOauth']['accessToken']
+
+
+def refused(source):
+    """True when Claude cleared both tokens: it does so when the refresh token is refused."""
+    try:
+        oauth = private_read(source)['claudeAiOauth']
+    except Exception:
+        return False
+    return isinstance(oauth, dict) and oauth.get('accessToken') == '' and oauth.get('refreshToken') == ''
+
+
 def perform(auth=None, *, account):
     with isolated.context('claude') as root:
         source = root / 'claude/.credentials.json'
@@ -69,17 +87,28 @@ def perform(auth=None, *, account):
             isolated.write(source, validate_auth(auth))
             # No prompt, user message, session resume or tool request is ever sent.
             # auth status is unsuitable: it exits before saving a rotated token.
-            with isolated.process(isolated.command('claude', root, ARGS)) as proc:
-                try:
-                    output, _ = proc.communicate((json.dumps(INIT) + '\n').encode(), timeout=25)
-                except subprocess.TimeoutExpired:
-                    raise live.LiveError('auth_timeout', 'Isolated Claude renewal timed out; no automatic replay.') from None
-                if proc.returncode != 0 or len(output) > live.MAX_BYTES:
-                    raise live.LiveError('auth_rejected', 'Isolated Claude initialization failed; output suppressed.')
-                replies = [live.json_object(line) for line in output.splitlines() if line.strip()]
-                if not any(r.get('type') == 'control_response' and r.get('response', {}).get('request_id') == INIT['request_id']
-                           and r['response'].get('subtype') == 'success' for r in replies):
-                    raise live.LiveError('auth_protocol', 'Expected authentication initialization response was not received.')
+            try:
+                with isolated.process(isolated.command('claude', root, ARGS)) as proc:
+                    try:
+                        output, _ = proc.communicate((json.dumps(INIT) + '\n').encode(), timeout=25)
+                    except subprocess.TimeoutExpired:
+                        raise live.LiveError('auth_timeout', 'Isolated Claude renewal timed out.') from None
+                    if proc.returncode != 0 or len(output) > live.MAX_BYTES:
+                        raise live.LiveError('auth_rejected', 'Isolated Claude initialization failed; output suppressed.')
+                    replies = [live.json_object(line) for line in output.splitlines() if line.strip()]
+                    if not any(r.get('type') == 'control_response' and r.get('response', {}).get('request_id') == INIT['request_id']
+                               and r['response'].get('subtype') == 'success' for r in replies):
+                        raise live.LiveError('auth_protocol', 'Expected authentication initialization response was not received.')
+            except live.LiveError:
+                # Claude saves a rotated grant as soon as the refresh succeeds,
+                # before anything later can fail or time out. Keep that grant
+                # rather than discarding the only valid copy with the sandbox.
+                if not rotated(source, auth):
+                    if auth is not None and refused(source):
+                        raise live.LiveError('refresh_refused', 'Claude refused the saved refresh token; sign in again.') from None
+                    raise
+        if auth is not None and refused(source):
+            raise live.LiveError('refresh_refused', 'Claude refused the saved refresh token; sign in again.')
         fresh = validate_auth(private_read(source))
         entry = live.read_access_token(source, 'claude', include_identity=False)
         if not entry.get('expires_at') or entry['expires_at'] < time.time() + 600:

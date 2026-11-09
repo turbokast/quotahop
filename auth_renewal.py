@@ -39,6 +39,19 @@ BLOCKED = {'unsupported_cli': 'Claude Code updated to a build QuotaHop has not v
            'dependency_missing': 'Renewal tool missing (CLI or bubblewrap); renewal paused, grant intact.',
            'network_unavailable': 'Network was unreachable at renewal time, so nothing was sent; retrying every two minutes, grant intact.'}
 NETWORK_RETRY = 120
+# A renewal that fails after it may have reached the provider is retried with
+# the same grant on this schedule (about 4.6 hours in all), then given up.
+# Replaying is safe: if the provider did rotate the grant and the reply was
+# lost, the newer grant is lost anyway, so the old one either still works
+# (healed) or is refused (no worse). Each attempt is recorded by fixed code.
+RETRY_DELAYS = (120, 300, 900, 1800, 3600, 3600, 3600, 3600)
+RETRY_CODES = {'auth_timeout', 'auth_rejected', 'auth_protocol', 'auth_expiry', 'interrupted',
+               'previously_stopped', 'invalid_credentials', 'invalid_data', 'error'}
+# Definitive stops: retrying the same grant cannot help.
+STOP_REASONS = {'refresh_refused': 'The provider refused the saved refresh token (revoked or used elsewhere), so this login cannot renew. Sign in again with --reauth EMAIL.',
+                'account_mismatch': 'Renewal returned a different account or workspace, so nothing was published. Sign in again with --reauth EMAIL.',
+                'vault_changed': "This account's saved login was replaced outside renewal, so renewal stopped to avoid overwriting it. Sign in again with --reauth EMAIL.",
+                'retries_exhausted': 'Renewal failed on every automatic retry. Sign in again with --reauth EMAIL.'}
 # Hosts the native CLI contacts during a renewal (token endpoint, then profile).
 RENEWAL_HOSTS = {'claude': (('platform.claude.com', 443), ('api.anthropic.com', 443)),
                  'codex': (('auth.openai.com', 443),)}
@@ -70,8 +83,31 @@ def notify_suspended(names):
         return
     import desktop_notify
     desktop_notify.send('QuotaHop renewal stopped',
-                        f"Renewal stopped for {', '.join(sorted(names))}: the outcome of a renewal is uncertain, so QuotaHop "
-                        "will not retry it. Sign in again with: quotahop --reauth EMAIL")
+                        f"Renewal stopped for {', '.join(sorted(names))} and cannot recover on its own. "
+                        "Sign in again with: quotahop --reauth EMAIL")
+
+
+def retry_later(item, code, now):
+    """Keep the grant and try it again later; give up after RETRY_DELAYS."""
+    previous = item.get('retry') or {'count': 0, 'since': now}
+    count = previous['count'] + 1
+    item['retry'] = {'count': count, 'since': previous['since'], 'code': code if code in RETRY_CODES else 'error'}
+    item.pop('blocked', None)
+    if count > len(RETRY_DELAYS):
+        item.update(state='suspended', reason='retries_exhausted')
+    else:
+        item.update(state='ready', next_at=now + RETRY_DELAYS[count - 1])
+        item.pop('reason', None)
+
+
+def stop_renewal(item, reason):
+    item.update(state='suspended', reason=reason)
+    item.pop('retry', None)
+
+
+def healthy(item):
+    for field in ('retry', 'reason', 'blocked'):
+        item.pop(field, None)
 
 
 def provider_for(account):
@@ -106,7 +142,8 @@ def records(store, key):
         for ident, item in value.items():
             if (not isinstance(item, dict) or item.get('origin') not in ORIGINS.values()
                     or item.get('state') not in ('ready', 'in_flight', 'suspended', 'reauth_required', 'cli_owned', 'legacy_hold')
-                    or set(item) - {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at', 'ownership', 'blocked'}
+                    or set(item) - {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at', 'ownership', 'blocked',
+                                    'retry', 'reason'}
                     or not {'origin', 'auth', 'entry', 'state', 'next_at', 'published', 'updated_at'} <= set(item)):
                 raise ValueError()
             provider = next(p for p, origin in ORIGINS.items() if origin == item['origin'])
@@ -127,6 +164,14 @@ def records(store, key):
                 raise ValueError()
             if 'blocked' in item and item['blocked'] not in BLOCKED:
                 raise ValueError()
+            if 'reason' in item and item['reason'] not in STOP_REASONS:
+                raise ValueError()
+            if 'retry' in item:
+                retry = item['retry']
+                if (not isinstance(retry, dict) or set(retry) != {'count', 'since', 'code'}
+                        or type(retry['count']) is not int or retry['count'] < 1
+                        or type(retry['since']) not in (int, float) or retry['code'] not in RETRY_CODES):
+                    raise ValueError()
             if provider == 'claude':
                 if item.get('ownership') == 'cli':
                     item['state'] = 'cli_owned'
@@ -259,6 +304,7 @@ def commit_claude_handoff(store, key, ident, entry):
     if not owned_claude.matches(item['auth'], entry):
         raise live.LiveError('grant_changed', 'Claude grant changed before handoff; no authentication changed.')
     item.update(state='cli_owned', ownership='cli')
+    healthy(item)
     store.write(REGISTRY, seal(saved, key), replace=True)
     from claude_usage import validate_accounts
     accounts = validate_accounts(store.read('accounts.json'))
@@ -392,13 +438,22 @@ def public_status(accounts, saved, *, active=False):
         state = item['state'] if item else 'needs_enrollment'
         if state == 'ready' and item.get('blocked'):
             state = 'blocked'
+        elif state == 'ready' and item.get('retry'):
+            state = 'retrying'
+        retry = item.get('retry') if item else None
         mode = 'expiry_tracking' if provider == 'muse_code' else 'automatic_renewal'
         if state in ('cli_owned', 'legacy_hold'):
             mode = 'cli_renewal' if state == 'cli_owned' else 'renewal_hold'
         rows.append({'id': account['id'], 'name': account['name'], 'provider': provider, 'state': state, 'mode': mode,
-                     'next_at': item['next_at'] if item and state in ('ready', 'blocked') else None,
+                     'next_at': item['next_at'] if item and state in ('ready', 'blocked', 'retrying') else None,
                      'expires_at': item['entry']['expires_at'] if item else None,
+                     **({'attempt': retry['count'], 'attempts': len(RETRY_DELAYS), 'last_error': retry['code'],
+                         'failing_since': retry['since']} if retry else {}),
+                     **({'reason': item['reason']} if item and state == 'suspended' and item.get('reason') else {}),
                      'message': (BLOCKED[item['blocked']] if state == 'blocked' else
+                                 f"Last renewal did not complete ({retry['code'].replace('_', ' ')}); retrying automatically with the same "
+                                 f"grant, attempt {retry['count']} of {len(RETRY_DELAYS)}." if state == 'retrying' else
+                                 STOP_REASONS[item['reason']] if state == 'suspended' and item.get('reason') else
                                  'Active in Claude Code, which renews it. QuotaHop takes it back automatically when Claude Code switches away.' if state == 'cli_owned'
                                  else 'Older grant awaiting a check of the current Claude login; renewal resumes once the background worker confirms Claude Code does not hold it.' if state == 'legacy_hold'
                                  else 'Renewal outcome uncertain: sign in again with --reauth EMAIL; automatic retries disabled.' if state in ('in_flight', 'suspended')
@@ -484,12 +539,18 @@ def cycle(store, key, now=None):
             except FileNotFoundError:
                 pass
             if item['state'] == 'in_flight':
-                item['state'] = 'suspended'  # crash after sending: never replay an old refresh token
+                # Interrupted after it may have sent: retry later (see RETRY_DELAYS).
+                retry_later(item, 'interrupted', now)
+            elif item['state'] == 'suspended' and 'reason' not in item and 'retry' not in item:
+                # Older versions stopped on the first uncertain outcome. Give
+                # those grants the same retries; definitive cases stop again below.
+                retry_later(item, 'previously_stopped', now)
+                item['next_at'] = now
             if item['state'] != 'ready':
                 continue
             current_digest = digest(entries.get(ident, {}))
             if current_digest not in (item['published'], digest(item['entry'])):
-                item['state'] = 'suspended'
+                stop_renewal(item, 'vault_changed')
                 continue
             if item['next_at'] <= now and item['origin'] == owned_muse.ORIGIN:
                 item['state'] = 'reauth_required'
@@ -510,18 +571,24 @@ def cycle(store, key, now=None):
                         # A refresh cannot change the account; keep its binding.
                         if item['entry'].get(field) and not entry.get(field):
                             entry[field] = item['entry'][field]
-                    require_same(item['entry'], entry)
-                    item.update(auth=fresh, entry=entry, state='ready', next_at=entry['expires_at'] - 300, updated_at=time.time())
-                    item.pop('blocked', None)
+                    try:
+                        require_same(item['entry'], entry)
+                    except live.LiveError:
+                        stop_renewal(item, 'account_mismatch')
+                    else:
+                        item.update(auth=fresh, entry=entry, state='ready', next_at=entry['expires_at'] - 300, updated_at=time.time())
+                        healthy(item)
                 except isolated_auth.PreflightError as exc:
                     # Refused before any process or request: the refresh token
                     # was never sent, so retrying later cannot replay it.
                     item.update(state='ready', blocked=exc.code if exc.code in BLOCKED else 'unsupported_cli',
                                 next_at=time.time() + BLOCKED_RETRY)
-                except Exception:
-                    # Provider errors can reflect secrets; persist a fixed state only.
-                    # A lost successful response may have rotated the token. No replay.
-                    item['state'] = 'suspended'
+                except Exception as exc:
+                    # Provider errors can reflect secrets; persist a fixed code only.
+                    if getattr(exc, 'code', None) == 'refresh_refused':
+                        stop_renewal(item, 'refresh_refused')  # definitive: retrying cannot help
+                    else:
+                        retry_later(item, getattr(exc, 'code', 'error'), time.time())
                 store.write(REGISTRY, seal(saved, key), replace=True)
             if item['state'] == 'ready':
                 if entries.get(ident) != item['entry']:
@@ -641,8 +708,13 @@ def render_status(value):
     lines = [value['message']]
     for row in value.get('accounts', []):
         label = row['state'].replace('_', ' ')
-        if row['state'] in ('ready', 'blocked'):
-            label += (' · sign-in expires ' if row['provider'] == 'muse_code' else ' · retry in ' if row['state'] == 'blocked' else ' · renewal due ') + duration(max(0, row['next_at'] - time.time()))
+        if row['state'] in ('ready', 'blocked', 'retrying') and row.get('next_at') is not None:
+            label += (' · sign-in expires ' if row['provider'] == 'muse_code' else ' · retry in ' if row['state'] in ('blocked', 'retrying')
+                      else ' · renewal due ') + duration(max(0, row['next_at'] - time.time()))
+        if row['state'] == 'retrying':
+            label += f" (attempt {row['attempt']} of {row['attempts']}, last: {row['last_error'].replace('_', ' ')})"
+        elif row['state'] == 'suspended' and row.get('reason'):
+            label += f" ({row['reason'].replace('_', ' ')}): quotahop --reauth EMAIL"
         lines.append(f"  {row['name']}: {label}")
     return '\n'.join(lines)
 

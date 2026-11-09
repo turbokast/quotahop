@@ -207,8 +207,10 @@ on PATH, a sibling build in Claude's versions directory, or a retained copy at
 hash-verified copy fallback) that QuotaHop keeps so pruning of old versions cannot
 stop renewal. A refusal before any process starts raises a preflight error: the
 refresh token was never sent, so renewal pauses as `blocked` and retries every ten
-minutes rather than suspending. Any failure after a request may have been sent
-suspends the grant, since a lost response can hide a successful rotation.
+minutes rather than suspending. A failure after a request may have been sent
+is retried with the same grant on a bounded schedule: a lost response may hide a
+rotation, but then the rotated grant is already lost, so a replay either heals or
+is refused. A rotated grant the sandbox saved before the failure is kept.
 
 ## Automatic switching trigger (Claude Code 2.1.316, inspected as data)
 
